@@ -11,7 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
-	"github.com/AdguardTeam/dnscrypt"
+	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/holandyoung/dnsproxy/internal/dnsproxytest"
 	"math/big"
 	"net"

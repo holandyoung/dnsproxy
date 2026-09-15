@@ -146,3 +146,12 @@ Use a task branch, independent review of the exact commit, green local and PR
 checks, a PR to `master`, and CI verification of the resulting master commit.
 Upstream mirroring, private AdGuard automation, image publication and releases
 are not part of this fork's CI.
+# DNSCrypt transport ownership
+
+The `dnscrypt/` package adopts AdguardTeam/dnscrypt v0.0.2 at
+`2eb01a7a527fbf26aeba502d8e2a4c0ae39997bd`. See its
+[adaptation record](dnscrypt/ADAPTATION.md) for the copied source boundary,
+original Unlicense, exact changes, rejected wrapper approach and real TCP
+counterexamples. All client, proxy, command and test imports use that package;
+the previous external dependency is removed. Shutdown closes accepted sockets
+before joining work, including certificate-handshake writers outside middleware.

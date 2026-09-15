@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AdguardTeam/dnscrypt"
+	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
 	"github.com/holandyoung/dnsproxy/upstream"
 	"github.com/miekg/dns"

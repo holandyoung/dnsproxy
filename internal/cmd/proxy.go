@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AdguardTeam/dnscrypt"
+	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"

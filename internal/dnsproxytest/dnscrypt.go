@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AdguardTeam/dnscrypt"
+	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/AdguardTeam/golibs/netutil"
 
 	"github.com/ameshkov/dnsstamps"

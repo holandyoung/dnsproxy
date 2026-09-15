@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdguardTeam/dnscrypt"
+	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/miekg/dns"
 )
 
