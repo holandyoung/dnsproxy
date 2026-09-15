@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/internal/bootstrap"
-	"github.com/AdguardTeam/dnsproxy/proxyutil"
 	"github.com/AdguardTeam/golibs/errors"
+	"github.com/holandyoung/dnsproxy/internal/bootstrap"
+	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/miekg/dns"
 )
 
@@ -48,16 +48,12 @@ type UpstreamResolver struct {
 // returned error will have the underlying type of [NotBootstrapError], and r
 // itself will be fully usable.  Closing r.Upstream is caller's responsibility.
 func NewUpstreamResolver(resolverAddress string, opts *Options) (r *UpstreamResolver, err error) {
+	// Preserve the same network route and TLS policy when this upstream is
+	// used for bootstrap. Dropping options here could bypass its owner.
 	upsOpts := &Options{}
-
-	// TODO(ameshkov):  Aren't other options needed here?
 	if opts != nil {
-		upsOpts.Timeout = opts.Timeout
-		upsOpts.VerifyServerCertificate = opts.VerifyServerCertificate
-		upsOpts.PreferIPv6 = opts.PreferIPv6
-		upsOpts.Logger = opts.Logger
+		upsOpts = opts.Clone()
 	}
-
 	ups, err := AddressToUpstream(resolverAddress, upsOpts)
 	if err != nil {
 		err = fmt.Errorf("upstream bootstrap: creating upstream: %w", err)

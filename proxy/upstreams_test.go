@@ -3,10 +3,10 @@ package proxy_test
 import (
 	"testing"
 
-	"github.com/AdguardTeam/dnsproxy/proxy"
-	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
+	"github.com/holandyoung/dnsproxy/proxy"
+	"github.com/holandyoung/dnsproxy/upstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

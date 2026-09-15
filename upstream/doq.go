@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
@@ -14,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/proxyutil"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/validate"
+	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -60,7 +61,8 @@ var compatProtoDQ = []string{NextProtoDQ, "doq-i00", "dq", "doq-i02"}
 type dnsOverQUIC struct {
 	// getDialer either returns an initialized dial handler or creates a new
 	// one.
-	getDialer DialerInitializer
+	getDialer     DialerInitializer
+	networkDialer NetworkDialer
 
 	// addr is the DNS-over-QUIC server URL.
 	addr *url.URL
@@ -129,11 +131,12 @@ func newDoQ(addr *url.URL, opts *Options) (u Upstream, err error) {
 	}
 
 	u = &dnsOverQUIC{
-		getDialer:  newDialerInitializer(addr, opts),
-		addr:       addr,
-		quicConfig: quicConf,
+		networkDialer: opts.NetworkDialer,
+		getDialer:     newDialerInitializer(addr, opts),
+		addr:          addr,
+		quicConfig:    quicConf,
 		tlsConf: &tls.Config{
-			ServerName:   addr.Hostname(),
+			ServerName:   cmp.Or(opts.ServerName, addr.Hostname()),
 			RootCAs:      opts.RootCAs,
 			CipherSuites: opts.CipherSuites,
 			// Use the default capacity for the LRU cache.  It may be useful to
@@ -351,6 +354,11 @@ func (p *dnsOverQUIC) openStream(conn *quic.Conn) (*quic.Stream, error) {
 
 // openConnection dials a new QUIC connection.
 func (p *dnsOverQUIC) openConnection() (conn *quic.Conn, err error) {
+	ctx, cancel := p.withDeadline(context.Background())
+	defer cancel()
+	if p.networkDialer != nil {
+		return dialQUIC(ctx, p.networkDialer, p.addr.Host, p.tlsConf.Clone(), p.getQUICConfig())
+	}
 	dialContext, err := p.getDialer()
 	if err != nil {
 		return nil, fmt.Errorf("bootstrapping %s: %w", p.addr, err)
@@ -377,10 +385,7 @@ func (p *dnsOverQUIC) openConnection() (conn *quic.Conn, err error) {
 
 	addr := udpConn.RemoteAddr().String()
 
-	ctx, cancel := p.withDeadline(context.Background())
-	defer cancel()
-
-	conn, err = quic.DialAddrEarly(ctx, addr, p.tlsConf.Clone(), p.getQUICConfig())
+	conn, err = dialQUIC(ctx, nil, addr, p.tlsConf.Clone(), p.getQUICConfig())
 	if err != nil {
 		return nil, fmt.Errorf("dialing quic connection to %s: %w", p.addr, err)
 	}

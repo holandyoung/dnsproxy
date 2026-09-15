@@ -3,7 +3,7 @@ package middleware
 import (
 	"net/netip"
 
-	"github.com/AdguardTeam/dnsproxy/proxy"
+	"github.com/holandyoung/dnsproxy/proxy"
 	"github.com/miekg/dns"
 )
 

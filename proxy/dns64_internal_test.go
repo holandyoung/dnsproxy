@@ -6,10 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
+	"github.com/holandyoung/dnsproxy/upstream"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -149,8 +149,6 @@ func TestProxy_Resolve_dns64(t *testing.T) {
 	ptrGlobDomain, err := netutil.IPToReversedAddr(someIPv4)
 	require.NoError(t, err)
 	ptrGlobDomain = dns.Fqdn(ptrGlobDomain)
-
-	localCliAddr := netip.MustParseAddrPort("192.168.1.1:1234")
 
 	const (
 		domainIPv6    = "ipv6.only."
@@ -413,17 +411,17 @@ func TestProxy_Resolve_dns64(t *testing.T) {
 
 			servicetest.RequireRun(t, p, testTimeout)
 
-			dctx := &DNSContext{
-				Req:  (&dns.Msg{}).SetQuestion(tc.qname, tc.qtype),
-				Addr: localCliAddr,
-			}
-
-			err = p.handleDNSRequest(testutil.ContextWithTimeout(t, defaultTimeout), dctx)
+			query := new(dns.Msg).SetQuestion(tc.qname, tc.qtype)
+			res, _, err := (&dns.Client{Net: "tcp", Timeout: testTimeout}).Exchange(query, p.Addr(ProtoTCP).String())
 			require.NoError(t, err)
-
-			res := dctx.Res
 			require.NotNil(t, res)
-			assert.Equal(t, tc.wantAns, res.Answer)
+			// Normalize only wire metadata (RDLENGTH and IP byte width). All
+			// records, TTLs, names, and record data remain exact assertions.
+			wire, packErr := (&dns.Msg{Answer: tc.wantAns}).Pack()
+			require.NoError(t, packErr)
+			want := new(dns.Msg)
+			require.NoError(t, want.Unpack(wire))
+			assert.Equal(t, want.Answer, res.Answer)
 		})
 	}
 }

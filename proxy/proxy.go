@@ -18,10 +18,6 @@ import (
 	"time"
 
 	"github.com/AdguardTeam/dnscrypt"
-	"github.com/AdguardTeam/dnsproxy/fastip"
-	"github.com/AdguardTeam/dnsproxy/internal/dnsmsg"
-	proxynetutil "github.com/AdguardTeam/dnsproxy/internal/netutil"
-	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/AdguardTeam/golibs/contextutil"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
@@ -30,6 +26,10 @@ import (
 	"github.com/AdguardTeam/golibs/syncutil"
 	"github.com/AdguardTeam/golibs/timeutil"
 	"github.com/AdguardTeam/golibs/validate"
+	"github.com/holandyoung/dnsproxy/fastip"
+	"github.com/holandyoung/dnsproxy/internal/dnsmsg"
+	proxynetutil "github.com/holandyoung/dnsproxy/internal/netutil"
+	"github.com/holandyoung/dnsproxy/upstream"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -83,7 +83,9 @@ type Proxy struct {
 	randSrc rand.Source
 
 	// requestHandler handles the DNS request.  It is never nil.
-	requestHandler Handler
+	requestHandler  Handler
+	requestPipeline Handler
+	responseHandler Handler
 
 	// requestsSema limits the number of simultaneous requests.
 	//
@@ -346,6 +348,10 @@ type Proxy struct {
 	// started indicates if the proxy has been started.
 	started bool
 
+	// servingCancel ends one listener generation, including accepted sockets
+	// waiting for a semaphore or a complete request. Protected by mu.
+	servingCancel context.CancelFunc
+
 	// useDNS64 enables DNS64 handling.  If true, proxy will translate IPv4
 	// answers into IPv6 answers using first of DNS64Prefs.  Note also that PTR
 	// requests for addresses within the specified networks are considered
@@ -410,6 +416,7 @@ func New(c *Config) (p *Proxy, err error) {
 			contextutil.EmptyConstructor{},
 		),
 		requestHandler:   cmp.Or[Handler](c.RequestHandler, DefaultHandler{}),
+		responseHandler:  c.ResponseHandler,
 		upstreamRTTStats: map[string]upstreamRTTStats{},
 		rttLock:          &sync.Mutex{},
 		mu:               &sync.RWMutex{},
@@ -431,6 +438,15 @@ func New(c *Config) (p *Proxy, err error) {
 	err = p.validateConfig(c)
 	if err != nil {
 		return nil, err
+	}
+	p.requestPipeline = HandlerFunc(func(ctx context.Context, _ *Proxy, d *DNSContext) error {
+		return p.processDNSRequest(ctx, d)
+	})
+	if c.RequestMiddleware != nil {
+		p.requestPipeline = c.RequestMiddleware(p.requestPipeline)
+		if p.requestPipeline == nil {
+			return nil, errors.Error("request middleware returned a nil handler")
+		}
 	}
 
 	p.cacheOptimisticAnswerTTL = cmp.Or(p.cacheOptimisticAnswerTTL, DefaultOptimisticAnswerTTL)
@@ -524,12 +540,23 @@ func (p *Proxy) Start(ctx context.Context) (err error) {
 		// Don't wrap the error since it's informative enough as is.
 		return err
 	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	servingCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	p.servingCancel = cancel
+	defer func() {
+		if err != nil {
+			cancel()
+			err = errors.Join(err, errors.Join(p.closeListeners(nil)...), shutdownDNSCryptServers(servingCtx, p.dnsCryptServers))
+			p.dnsCryptServers = nil
+			p.servingCancel = nil
+		}
+	}()
 
 	err = p.startListeners(ctx)
 	if err != nil {
-		closeErr := errors.Join(p.closeListeners(nil)...)
-
-		return fmt.Errorf("configuring listeners: %w", errors.WithDeferred(err, closeErr))
+		return fmt.Errorf("configuring listeners: %w", err)
 	}
 
 	err = p.initDNSCryptServers(ctx)
@@ -538,19 +565,17 @@ func (p *Proxy) Start(ctx context.Context) (err error) {
 		return err
 	}
 
-	// Use context without cancel to prevent listeners' context from being
-	// canceled.
-	p.serveListeners(context.WithoutCancel(ctx))
-
-	err = p.startDNSCryptServers(context.WithoutCancel(ctx))
+	err = p.startDNSCryptServers(servingCtx)
 	if err != nil {
-		p.dnsCryptServers = nil
-
 		// Don't wrap the error since it's informative enough as is.
+		return err
+	}
+	if err = ctx.Err(); err != nil {
 		return err
 	}
 
 	p.started = true
+	p.serveListeners(servingCtx)
 
 	return nil
 }
@@ -567,7 +592,7 @@ func (p *Proxy) logClose(ctx context.Context, l slog.Level, c io.Closer, msg str
 func closeAll[C io.Closer](errs []error, closers ...C) (appended []error) {
 	for _, c := range closers {
 		err := c.Close()
-		if err != nil {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			errs = append(errs, err)
 		}
 	}
@@ -590,6 +615,9 @@ func (p *Proxy) Shutdown(ctx context.Context) (err error) {
 		return nil
 	}
 
+	p.started = false
+	p.servingCancel()
+	p.servingCancel = nil
 	errs := p.closeListeners(nil)
 
 	for _, u := range []*UpstreamConfig{
@@ -605,8 +633,6 @@ func (p *Proxy) Shutdown(ctx context.Context) (err error) {
 	err = shutdownDNSCryptServers(ctx, p.dnsCryptServers)
 	errs = append(errs, err)
 	p.dnsCryptServers = nil
-
-	p.started = false
 
 	p.logger.InfoContext(ctx, "stopped dns proxy server")
 
@@ -636,10 +662,10 @@ func (p *Proxy) closeListeners(errs []error) (res []error) {
 	if p.httpsServer != nil {
 		res = closeAll(res, p.httpsServer)
 		p.httpsServer = nil
-
-		// No need to close these since they're closed by httpsServer.Close().
-		p.httpsListen = nil
 	}
+	// A failed Start may bind these before Server.Serve takes ownership.
+	res = closeAll(res, p.httpsListen...)
+	p.httpsListen = nil
 
 	if p.h3Server != nil {
 		res = closeAll(res, p.h3Server)

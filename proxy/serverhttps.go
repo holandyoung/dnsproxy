@@ -13,10 +13,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/AdguardTeam/dnsproxy/internal/bootstrap"
 	"github.com/AdguardTeam/golibs/httphdr"
 	"github.com/AdguardTeam/golibs/ioutil"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
+	"github.com/holandyoung/dnsproxy/internal/bootstrap"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -43,6 +43,7 @@ func (p *Proxy) listenHTTP(
 	laddr := tcpListen.Addr()
 	tcpAddr, ok := laddr.(*net.TCPAddr)
 	if !ok {
+		_ = tcpListen.Close()
 		return nil, nil, fmt.Errorf("bad listener address type: %T", laddr)
 	}
 

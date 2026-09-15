@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/upstream"
 	glcache "github.com/AdguardTeam/golibs/cache"
 	"github.com/AdguardTeam/golibs/mathutil"
+	"github.com/holandyoung/dnsproxy/upstream"
 	"github.com/miekg/dns"
 )
 

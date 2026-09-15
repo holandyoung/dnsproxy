@@ -16,13 +16,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/upstream"
 	glcache "github.com/AdguardTeam/golibs/cache"
 	"github.com/AdguardTeam/golibs/contextutil"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
+	"github.com/holandyoung/dnsproxy/upstream"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -548,6 +548,14 @@ func TestProxy_Resolve_dnssecCache(t *testing.T) {
 
 func TestExchangeWithReservedDomains(t *testing.T) {
 	t.Parallel()
+	answerAddr := newLocalUpstreamListener(t, 0, dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		response := new(dns.Msg).SetReply(r)
+		response.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("8.8.8.8")}}
+		require.NoError(testutil.PanicT{}, w.WriteMsg(response))
+	}))
+	refuseAddr := newLocalUpstreamListener(t, 0, dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		require.NoError(testutil.PanicT{}, w.WriteMsg(new(dns.Msg).SetRcode(r, dns.RcodeRefused)))
+	}))
 
 	dnsProxy := mustNew(t, &Config{
 		Logger:        testLogger,
@@ -556,10 +564,10 @@ func TestExchangeWithReservedDomains(t *testing.T) {
 		UpstreamConfig: newTestUpstreamConfigWithBoot(
 			t,
 			testTimeout,
-			"[/adguard.com/]192.0.2.1",
-			"[/google.ru/]192.0.2.2",
+			"[/adguard.com/]tcp://"+refuseAddr.String(),
+			"[/google.ru/]tcp://"+refuseAddr.String(),
 			"[/maps.google.ru/]#",
-			"tls://1.1.1.1",
+			"tcp://"+answerAddr.String(),
 		),
 		TrustedProxies: defaultTrustedProxies,
 	})
@@ -570,6 +578,7 @@ func TestExchangeWithReservedDomains(t *testing.T) {
 	addr := dnsProxy.Addr(ProtoTCP)
 	conn, err := dns.Dial("tcp", addr.String())
 	require.NoError(t, err)
+	defer conn.Close()
 
 	// Create google-a test message.
 	req := newTestMessage()

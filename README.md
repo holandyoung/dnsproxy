@@ -1,7 +1,11 @@
-# DNS Proxy <!-- omit in toc -->
+# DNS Proxy: HyperCacheDNS integration fork <!-- omit in toc -->
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/AdguardTeam/dnsproxy.svg)](https://pkg.go.dev/github.com/AdguardTeam/dnsproxy)
-[![Go Report Card](https://goreportcard.com/badge/github.com/AdguardTeam/dnsproxy)](https://goreportcard.com/report/AdguardTeam/dnsproxy)
+This is the `github.com/holandyoung/dnsproxy` integration fork of
+[AdGuard dnsproxy](https://github.com/AdguardTeam/dnsproxy), based on v0.84.2.
+[PATCHES.md](PATCHES.md) records the network ownership, complete request pipeline,
+TLS policy and lifecycle changes, their reasons, tests and delivery workflow.
+The fork keeps the upstream license and authorship. It is a source dependency;
+upstream binaries and images do not contain these changes.
 
 A simple DNS proxy server that supports all existing DNS protocols including
 `DNS-over-TLS`, `DNS-over-HTTPS`, `DNSCrypt`, and `DNS-over-QUIC`. Moreover,
@@ -25,18 +29,12 @@ it can work as a `DNS-over-HTTPS`, `DNS-over-TLS` or `DNS-over-QUIC` server.
 
 ## How to install
 
-There are several options how to install `dnsproxy`.
-
-1. Grab the binary for your device/OS from the [Releases][releases] page.
-2. Use the [official Docker image][docker].
-3. Build it yourself (see the instruction below).
-
-[releases]: https://github.com/AdguardTeam/dnsproxy/releases
-[docker]: https://hub.docker.com/r/adguard/dnsproxy
+Build from the reviewed fork source revision. The Go module identity is
+`github.com/holandyoung/dnsproxy`; no module replacement is required.
 
 ## How to build
 
-You will need Go 1.26 or later.
+Use the Go version declared in `go.mod`.
 
 ```shell
 make build

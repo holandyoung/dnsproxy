@@ -18,11 +18,11 @@ import (
 	"time"
 
 	"github.com/AdguardTeam/dnscrypt"
-	"github.com/AdguardTeam/dnsproxy/internal/bootstrap"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/ameshkov/dnsstamps"
+	"github.com/holandyoung/dnsproxy/internal/bootstrap"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/qlogwriter"
@@ -57,9 +57,29 @@ type QUICTracer interface {
 	) (trace qlogwriter.Trace)
 }
 
+// NetworkDialer owns bootstrap, routing, and physical connections for an
+// upstream. Addresses are the configured upstream host and port; implementations
+// must not fall back to another route after an error. It must be concurrency safe.
+type NetworkDialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+
+	// DialPacket returns an unconnected packet socket and its destination.
+	// Successful return transfers normal socket cleanup to the upstream. The
+	// dialer may still force-close its tracked sockets during owner shutdown.
+	DialPacket(ctx context.Context, address string) (net.PacketConn, net.Addr, error)
+}
+
 // Options for AddressToUpstream func.  With these options we can configure the
 // upstream properties.
 type Options struct {
+	// NetworkDialer replaces native bootstrap and dialing for every UDP, TCP,
+	// TLS, HTTPS, and QUIC path, including HTTP/3 probes. Nil uses native dialing.
+	NetworkDialer NetworkDialer
+
+	// ServerName overrides the TLS verification name and SNI for DoT, DoH, and
+	// DoQ without changing the dial target. Empty uses the upstream hostname.
+	ServerName string
+
 	// Logger is used for logging during parsing and upstream exchange.  If nil,
 	// [slog.Default] is used.
 	Logger *slog.Logger
@@ -112,6 +132,8 @@ type Options struct {
 // Clone copies o to a new struct.  Note, that this is not a deep clone.
 func (o *Options) Clone() (clone *Options) {
 	return &Options{
+		NetworkDialer:             o.NetworkDialer,
+		ServerName:                o.ServerName,
 		Bootstrap:                 o.Bootstrap,
 		Timeout:                   o.Timeout,
 		HTTPVersions:              o.HTTPVersions,
@@ -303,6 +325,9 @@ func parseStamp(upsURL *url.URL, opts *Options) (u Upstream, err error) {
 	case dnsstamps.StampProtoTypePlain:
 		return newPlain(&url.URL{Scheme: "udp", Host: stamp.ServerAddrStr}, opts)
 	case dnsstamps.StampProtoTypeDNSCrypt:
+		if opts.NetworkDialer != nil {
+			return nil, fmt.Errorf("DNSCrypt upstream does not support a custom network dialer")
+		}
 		return newDNSCrypt(upsURL, opts), nil
 	case dnsstamps.StampProtoTypeDoH:
 		return newDoH(&url.URL{Scheme: "https", Host: stamp.ProviderName, Path: stamp.Path}, opts)
@@ -391,6 +416,18 @@ type DialerInitializer func() (handler bootstrap.DialHandler, err error)
 // newDialerInitializer creates an initializer of the dialer that will dial the
 // addresses resolved from u using opts.
 func newDialerInitializer(u *url.URL, opts *Options) (di DialerInitializer) {
+	if opts.NetworkDialer != nil {
+		return func() (bootstrap.DialHandler, error) {
+			return func(ctx context.Context, network, _ string) (net.Conn, error) {
+				if opts.Timeout > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
+					defer cancel()
+				}
+				return opts.NetworkDialer.DialContext(ctx, network, u.Host)
+			}, nil
+		}
+	}
 	var l *slog.Logger
 	if opts.Logger != nil {
 		l = opts.Logger.With(slogutil.KeyPrefix, "bootstrap")

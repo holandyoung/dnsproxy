@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -16,11 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/internal/bootstrap"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/httphdr"
 	"github.com/AdguardTeam/golibs/ioutil"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
+	"github.com/holandyoung/dnsproxy/internal/bootstrap"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -52,7 +53,8 @@ const (
 type dnsOverHTTPS struct {
 	// getDialer either returns an initialized dial handler or creates a new
 	// one.
-	getDialer DialerInitializer
+	getDialer     DialerInitializer
+	networkDialer NetworkDialer
 
 	// addr is the DNS-over-HTTPS server URL.
 	addr *url.URL
@@ -111,12 +113,13 @@ func newDoH(addr *url.URL, opts *Options) (u Upstream, err error) {
 	}
 
 	ups := &dnsOverHTTPS{
-		getDialer:  newDialerInitializer(addr, opts),
-		addr:       addr,
-		quicConf:   quicConf,
-		quicConfMu: &sync.Mutex{},
+		networkDialer: opts.NetworkDialer,
+		getDialer:     newDialerInitializer(addr, opts),
+		addr:          addr,
+		quicConf:      quicConf,
+		quicConfMu:    &sync.Mutex{},
 		tlsConf: &tls.Config{
-			ServerName:   addr.Hostname(),
+			ServerName:   cmp.Or(opts.ServerName, addr.Hostname()),
 			RootCAs:      opts.RootCAs,
 			CipherSuites: opts.CipherSuites,
 			// Use the default capacity for the LRU cache.  It may be useful to
@@ -580,7 +583,7 @@ func (p *dnsOverHTTPS) createTransportH3(
 			tlsCfg *tls.Config,
 			cfg *quic.Config,
 		) (c *quic.Conn, err error) {
-			return quic.DialAddrEarly(ctx, addr, tlsCfg, cfg)
+			return dialQUIC(ctx, p.networkDialer, addr, tlsCfg, cfg)
 		},
 		DisableCompression: true,
 		TLSClientConfig:    tlsConfig,
@@ -600,19 +603,22 @@ func (p *dnsOverHTTPS) probeH3(
 	// We're using bootstrapped address instead of what's passed to the function
 	// it does not create an actual connection, but it helps us determine
 	// what IP is actually reachable (when there are v4/v6 addresses).
-	rawConn, err := dialContext(context.Background(), "udp", "")
-	if err != nil {
-		return "", fmt.Errorf("failed to dial: %w", err)
+	if p.networkDialer != nil {
+		addr = p.addr.Host
+	} else {
+		rawConn, dialErr := dialContext(context.Background(), "udp", "")
+		if dialErr != nil {
+			return "", fmt.Errorf("failed to dial: %w", dialErr)
+		}
+		// Native bootstrap selects an address; custom routes dial the real
+		// packet connection once in dialQUIC, without a disposable UDP probe.
+		_ = rawConn.Close()
+		udpConn, ok := rawConn.(*net.UDPConn)
+		if !ok {
+			return "", fmt.Errorf("not a UDP connection to %s", p.addrRedacted)
+		}
+		addr = udpConn.RemoteAddr().String()
 	}
-	// It's never actually used.
-	_ = rawConn.Close()
-
-	udpConn, ok := rawConn.(*net.UDPConn)
-	if !ok {
-		return "", fmt.Errorf("not a UDP connection to %s", p.addrRedacted)
-	}
-
-	addr = udpConn.RemoteAddr().String()
 
 	// Avoid spending time on probing if this upstream only supports HTTP/3.
 	if p.supportsH3() && !p.supportsHTTP() {
@@ -671,7 +677,7 @@ func (p *dnsOverHTTPS) probeQUIC(addr string, tlsConfig *tls.Config, ch chan err
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(t))
 	defer cancel()
 
-	conn, err := quic.DialAddrEarly(ctx, addr, tlsConfig, p.getQUICConfig())
+	conn, err := dialQUIC(ctx, p.networkDialer, addr, tlsConfig, p.getQUICConfig())
 	if err != nil {
 		ch <- fmt.Errorf("opening quic connection to %s: %w", p.addrRedacted, err)
 		return

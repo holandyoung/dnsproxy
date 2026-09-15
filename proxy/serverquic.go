@@ -7,15 +7,16 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/internal/bootstrap"
-	"github.com/AdguardTeam/dnsproxy/proxyutil"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/syncutil"
 	"github.com/bluele/gcache"
+	"github.com/holandyoung/dnsproxy/internal/bootstrap"
+	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 )
@@ -109,6 +110,8 @@ func (p *Proxy) listenQUIC(
 		newServerQUICConfig(),
 	)
 	if err != nil {
+		_ = tr.Close()
+		_ = conn.Close()
 		return nil, nil, nil, fmt.Errorf("listening early: %w", err)
 	}
 
@@ -150,6 +153,7 @@ func (p *Proxy) quicPacketLoop(
 				"proto", ProtoQUIC,
 				slogutil.KeyError, err,
 			)
+			closeQUICConn(conn, DoQCodeNoError, p.logger)
 
 			break
 		}
@@ -213,6 +217,9 @@ func (p *Proxy) handleQUICConnection(
 	conn *quic.Conn,
 	reqSema syncutil.Semaphore,
 ) {
+	closeConn := sync.OnceFunc(func() { closeQUICConn(conn, DoQCodeNoError, p.logger) })
+	stop := context.AfterFunc(ctx, closeConn)
+	defer func() { stop(); closeConn() }()
 	for {
 		// The stub to resolver DNS traffic follows a simple pattern in which
 		// the client sends a query, and the server provides a response.  This
@@ -223,18 +230,12 @@ func (p *Proxy) handleQUICConnection(
 		if err != nil {
 			logQUICStreamError(ctx, "accepting quic stream", err, p.logger)
 
-			// Close the connection to make sure resources are freed.
-			closeQUICConn(conn, DoQCodeNoError, p.logger)
-
 			return
 		}
 
 		err = reqSema.Acquire(ctx)
 		if err != nil {
 			p.logger.ErrorContext(ctx, "acquiring semaphore", slogutil.KeyError, err)
-
-			// Close the connection to make sure resources are freed.
-			closeQUICConn(conn, DoQCodeNoError, p.logger)
 
 			return
 		}

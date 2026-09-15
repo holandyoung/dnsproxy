@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -13,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/internal/bootstrap"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
+	"github.com/holandyoung/dnsproxy/internal/bootstrap"
 	"github.com/miekg/dns"
 )
 
@@ -59,7 +60,7 @@ func newDoT(addr *url.URL, opts *Options) (ups Upstream, err error) {
 		addr:      addr,
 		getDialer: newDialerInitializer(addr, opts),
 		tlsConf: &tls.Config{
-			ServerName:   addr.Hostname(),
+			ServerName:   cmp.Or(opts.ServerName, addr.Hostname()),
 			RootCAs:      opts.RootCAs,
 			CipherSuites: opts.CipherSuites,
 			// Use the default capacity for the LRU cache.  It may be useful to

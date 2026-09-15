@@ -10,13 +10,17 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"github.com/AdguardTeam/dnscrypt"
+	"github.com/holandyoung/dnsproxy/internal/dnsproxytest"
 	"math/big"
 	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,121 +121,77 @@ func TestUpstream_bootstrapTimeout(t *testing.T) {
 	}
 }
 
+// TestUpstreams covers native protocol and stamp dispatch against local real
+// servers. Public providers and their currently reachable ports are not a
+// protocol conformance oracle.
 func TestUpstreams(t *testing.T) {
-	t.Parallel()
-
-	const upsTimeout = 10 * time.Second
-
-	l := testLogger
-
-	googleRslv, err := NewUpstreamResolver("8.8.8.8:53", &Options{
-		Logger:  l,
-		Timeout: upsTimeout,
+	answer := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		require.NoError(testutil.PanicT{}, w.WriteMsg(respondToTestMessage(r)))
 	})
+	plain := startDNSServer(t, answer)
+	t.Cleanup(func() { require.NoError(t, plain.Close()) })
+	plainAddr := fmt.Sprintf("127.0.0.1:%d", plain.port)
+	dot := startDoTServer(t, answer)
+	dotAddr := fmt.Sprintf("127.0.0.1:%d", dot.port)
+	doh := startDoHServer(t, testDoHServerOptions{http3Enabled: true})
+	quicTLS, quicRoots := createServerTLSConfig(t, "127.0.0.1")
+	doq := startDoQServer(t, quicTLS, 0)
+	rc, err := dnscrypt.GenerateResolverConfig("example.org", nil, 0)
 	require.NoError(t, err)
-	cloudflareRslv, err := NewUpstreamResolver("1.0.0.1:53", &Options{
-		Logger:  l,
-		Timeout: upsTimeout,
+	crypt := dnsproxytest.StartDNSCryptServer(t, rc, dnsproxytest.DNSCryptHandler(func(ctx context.Context, w dnscrypt.ResponseWriter, r *dns.Msg) error {
+		return w.WriteMsg(ctx, respondToTestMessage(r))
+	}))
+	var bootCalls atomic.Int32
+	boot := startDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		bootCalls.Add(1)
+		response := new(dns.Msg).SetReply(r)
+		if r.Question[0].Qtype == dns.TypeA {
+			response.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("127.0.0.1")}}
+		}
+		require.NoError(testutil.PanicT{}, w.WriteMsg(response))
 	})
+	t.Cleanup(func() { require.NoError(t, boot.Close()) })
+	resolver, err := NewUpstreamResolver(fmt.Sprintf("127.0.0.1:%d", boot.port), &Options{Logger: testLogger, Timeout: time.Second})
 	require.NoError(t, err)
-
-	googleBoot := NewCachingResolver(googleRslv)
-	cloudflareBoot := NewCachingResolver(cloudflareRslv)
-
-	upstreams := []struct {
-		bootstrap Resolver
-		address   string
-	}{{
-		bootstrap: googleBoot,
-		address:   "8.8.8.8:53",
-	}, {
-		bootstrap: nil,
-		address:   "1.1.1.1",
-	}, {
-		bootstrap: cloudflareBoot,
-		address:   "1.1.1.1",
-	}, {
-		bootstrap: nil,
-		address:   "tcp://1.1.1.1:53",
-	}, {
-		bootstrap: nil,
-		address:   "94.140.14.14:5353",
-	}, {
-		bootstrap: nil,
-		address:   "tls://1.1.1.1",
-	}, {
-		bootstrap: nil,
-		address:   "tls://9.9.9.9:853",
-	}, {
-		bootstrap: googleBoot,
-		address:   "tls://dns.adguard.com",
-	}, {
-		bootstrap: googleBoot,
-		address:   "tls://dns.adguard.com:853",
-	}, {
-		bootstrap: googleBoot,
-		address:   "tls://dns.adguard.com:853",
-	}, {
-		bootstrap: nil,
-		address:   "tls://one.one.one.one",
-	}, {
-		bootstrap: googleBoot,
-		address:   "https://1dot1dot1dot1.cloudflare-dns.com/dns-query",
-	}, {
-		bootstrap: nil,
-		address:   "https://dns.google/dns-query",
-	}, {
-		// AdGuard DNS (DNSCrypt)
-		bootstrap: nil,
-		address:   "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20",
-	}, {
-		// AdGuard Family (DNSCrypt)
-		bootstrap: googleBoot,
-		address:   "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNTo1NDQzILgxXdexS27jIKRw3C7Wsao5jMnlhvhdRUXWuMm1AFq6ITIuZG5zY3J5cHQuZmFtaWx5Lm5zMS5hZGd1YXJkLmNvbQ",
-	}, {
-		// Cloudflare DNS (DNS-over-HTTPS)
-		bootstrap: googleBoot,
-		address:   "sdns://AgcAAAAAAAAABzEuMC4wLjGgENk8mGSlIfMGXMOlIlCcKvq7AVgcrZxtjon911-ep0cg63Ul-I8NlFj4GplQGb_TTLiczclX57DvMV8Q-JdjgRgSZG5zLmNsb3VkZmxhcmUuY29tCi9kbnMtcXVlcnk",
-	}, {
-		// Google (Plain)
-		bootstrap: nil,
-		address:   "sdns://AAcAAAAAAAAABzguOC44Ljg",
-	}, {
-		// AdGuard DNS (DNS-over-TLS)
-		bootstrap: googleBoot,
-		address:   "sdns://AwAAAAAAAAAAAAAPZG5zLmFkZ3VhcmQuY29t",
-	}, {
-		// AdGuard DNS (DNS-over-QUIC)
-		bootstrap: googleBoot,
-		address:   "sdns://BAcAAAAAAAAAAAAXZG5zLmFkZ3VhcmQtZG5zLmNvbTo3ODQ",
-	}, {
-		// Cloudflare DNS (DNS-over-HTTPS)
-		bootstrap: nil,
-		address:   "https://1.1.1.1/dns-query",
-	}, {
-		// AdGuard DNS (DNS-over-QUIC)
-		bootstrap: googleBoot,
-		address:   "quic://dns.adguard-dns.com",
-	}, {
-		// Google DNS (HTTP3)
-		bootstrap: nil,
-		address:   "h3://dns.google/dns-query",
-	}}
-
-	for _, test := range upstreams {
-		t.Run(test.address, func(t *testing.T) {
-			t.Parallel()
-
-			u, upsErr := AddressToUpstream(
-				test.address,
-				&Options{Logger: l, Bootstrap: test.bootstrap, Timeout: upsTimeout},
-			)
-			require.NoErrorf(t, upsErr, "failed to generate upstream from address %s", test.address)
-			testutil.CleanupAndRequireSuccess(t, u.Close)
-
-			checkUpstream(t, u, test.address)
+	t.Cleanup(func() { require.NoError(t, resolver.Close()) })
+	bootstrap := NewCachingResolver(resolver)
+	stamp := func(proto dnsstamps.StampProtoType, address, path string) string {
+		return (&dnsstamps.ServerStamp{Proto: proto, ServerAddrStr: address, ProviderName: address, Path: path}).String()
+	}
+	cases := []struct {
+		name     string
+		address  string
+		roots    *x509.CertPool
+		versions []HTTPVersion
+	}{
+		{"plain", plainAddr, nil, nil},
+		{"udp", "udp://" + plainAddr, nil, nil},
+		{"tcp", "tcp://" + plainAddr, nil, nil},
+		{"dot", "tls://" + dotAddr, dot.rootCAs, nil},
+		{"dot_bootstrap", "tls://" + strings.Replace(dotAddr, "127.0.0.1", "resolver.test", 1), dot.rootCAs, nil},
+		{"doh1", "https://" + doh.addr + "/dns-query", doh.rootCAs, []HTTPVersion{HTTPVersion11}},
+		{"doh2", "https://" + doh.addr + "/dns-query", doh.rootCAs, []HTTPVersion{HTTPVersion2}},
+		{"doh3", "h3://" + doh.addr + "/dns-query", doh.rootCAs, nil},
+		{"doh_bootstrap", "https://" + strings.Replace(doh.addr, "127.0.0.1", "resolver.test", 1) + "/dns-query", doh.rootCAs, nil},
+		{"doq", "quic://" + doq.addr, quicRoots, nil},
+		{"doq_bootstrap", "quic://" + strings.Replace(doq.addr, "127.0.0.1", "resolver.test", 1), quicRoots, nil},
+		{"stamp_plain", stamp(dnsstamps.StampProtoTypePlain, plainAddr, ""), nil, nil},
+		{"stamp_dot", stamp(dnsstamps.StampProtoTypeTLS, dotAddr, ""), dot.rootCAs, nil},
+		{"stamp_doh", stamp(dnsstamps.StampProtoTypeDoH, doh.addr, "/dns-query"), doh.rootCAs, nil},
+		{"stamp_doq", stamp(dnsstamps.StampProtoTypeDoQ, doq.addr, ""), quicRoots, nil},
+		{"stamp_dnscrypt", crypt.String(), nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u, parseErr := AddressToUpstream(tc.address, &Options{Logger: testLogger, Timeout: time.Second, RootCAs: tc.roots, ServerName: "127.0.0.1", Bootstrap: bootstrap, HTTPVersions: tc.versions})
+			require.NoError(t, parseErr)
+			t.Cleanup(func() { require.NoError(t, u.Close()) })
+			for range 3 {
+				checkUpstream(t, u, tc.address)
+			}
 		})
 	}
+	require.Positive(t, bootCalls.Load(), "hostname cases must reach the actual local bootstrap DNS server")
 }
 
 func TestAddressToUpstream(t *testing.T) {
