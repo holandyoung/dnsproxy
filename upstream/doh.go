@@ -361,7 +361,44 @@ func (p *dnsOverHTTPS) shouldRetry(err error) (ok bool) {
 		return false
 	}
 
-	if isQUICRetryError(err) {
+	var qAppErr *quic.ApplicationError
+	if errors.As(err, &qAppErr) {
+		// Error code 0 is often returned when the server has been restarted,
+		// and we try to use the same connection on the client-side.
+		// http3.ErrCodeNoError may be used by an HTTP/3 server when closing
+		// an idle connection.  These connections are not immediately closed
+		// by the HTTP client so this case should be handled.
+		if qAppErr.ErrorCode == 0 ||
+			qAppErr.ErrorCode == quic.ApplicationErrorCode(http3.ErrCodeNoError) {
+			return true
+		}
+	}
+
+	var resetErr *quic.StatelessResetError
+	if errors.As(err, &resetErr) {
+		// A stateless reset is sent when a server receives a QUIC packet that
+		// it doesn't know how to decrypt.  For instance, it may happen when
+		// the server was recently rebooted.  We should reconnect and try again
+		// in this case.
+		return true
+	}
+
+	var qTransportError *quic.TransportError
+	if errors.As(err, &qTransportError) && qTransportError.ErrorCode == quic.NoError {
+		// A transport error with the NO_ERROR error code could be sent by the
+		// server when it considers that it's time to close the connection.
+		// For example, Google DNS eventually closes an active connection with
+		// the NO_ERROR code and "Connection max age expired" message:
+		// https://github.com/AdguardTeam/dnsproxy/issues/283
+		return true
+	}
+
+	if errors.Is(err, quic.Err0RTTRejected) {
+		// This error happens when we try to establish a 0-RTT connection with
+		// a token the server is no more aware of.  This can be reproduced by
+		// restarting the QUIC server (it will clear its tokens cache).  The
+		// next connection attempt will return this error until the client's
+		// tokens cache is purged.
 		return true
 	}
 

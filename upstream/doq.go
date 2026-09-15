@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 )
 
 const (
@@ -495,69 +493,6 @@ func newQUICTokenStore() (s quic.TokenStore) {
 	// Setting maxOrigins to 1 and tokensPerOrigin to 10 assuming that this is
 	// more than enough for the way we use it (one connection per upstream).
 	return quic.NewLRUTokenStore(1, 10)
-}
-
-// isQUICRetryError checks the error and determines whether it may signal that
-// we should re-create the QUIC connection.  This requirement is caused by
-// quic-go issues, see the comments inside this function.
-// TODO(ameshkov): re-test when updating quic-go.
-func isQUICRetryError(err error) (ok bool) {
-	var qAppErr *quic.ApplicationError
-	if errors.As(err, &qAppErr) {
-		// Error code 0 is often returned when the server has been restarted,
-		// and we try to use the same connection on the client-side.
-		// http3.ErrCodeNoError may be used by an HTTP/3 server when closing
-		// an idle connection.  These connections are not immediately closed
-		// by the HTTP client so this case should be handled.
-		if qAppErr.ErrorCode == 0 ||
-			qAppErr.ErrorCode == quic.ApplicationErrorCode(http3.ErrCodeNoError) {
-			return true
-		}
-	}
-
-	var qIdleErr *quic.IdleTimeoutError
-	if errors.As(err, &qIdleErr) {
-		// This error means that the connection was closed due to being idle.
-		// In this case we should forcibly re-create the QUIC connection.
-		// Reproducing is rather simple, stop the server and wait for 30 seconds
-		// then try to send another request via the same upstream.
-		return true
-	}
-
-	var resetErr *quic.StatelessResetError
-	if errors.As(err, &resetErr) {
-		// A stateless reset is sent when a server receives a QUIC packet that
-		// it doesn't know how to decrypt.  For instance, it may happen when
-		// the server was recently rebooted.  We should reconnect and try again
-		// in this case.
-		return true
-	}
-
-	var qTransportError *quic.TransportError
-	if errors.As(err, &qTransportError) && qTransportError.ErrorCode == quic.NoError {
-		// A transport error with the NO_ERROR error code could be sent by the
-		// server when it considers that it's time to close the connection.
-		// For example, Google DNS eventually closes an active connection with
-		// the NO_ERROR code and "Connection max age expired" message:
-		// https://github.com/AdguardTeam/dnsproxy/issues/283
-		return true
-	}
-
-	if errors.Is(err, quic.Err0RTTRejected) {
-		// This error happens when we try to establish a 0-RTT connection with
-		// a token the server is no more aware of.  This can be reproduced by
-		// restarting the QUIC server (it will clear its tokens cache).  The
-		// next connection attempt will return this error until the client's
-		// tokens cache is purged.
-		return true
-	}
-
-	if errors.Is(err, os.ErrDeadlineExceeded) {
-		// A timeout that could happen when the server has been restarted.
-		return true
-	}
-
-	return false
 }
 
 func (p *dnsOverQUIC) withDeadline(
