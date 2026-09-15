@@ -238,13 +238,16 @@ func mustStartDefaultProxy(tb testing.TB) (p *Proxy) {
 // TestProxyRace sends multiple parallel DNS requests to the
 // fully configured dnsproxy to check for race conditions
 func TestProxyRace(t *testing.T) {
+	address := testDefaultUpstreamAddr(t)
 	upsConf := newTestUpstreamConfig(
 		t,
 		defaultTimeout,
 		// Use the same upstream twice so that we could rotate them
-		testDefaultUpstreamAddr(t),
-		testDefaultUpstreamAddr(t),
+		address,
+		address,
 	)
+	require.Len(t, upsConf.Upstreams, 2)
+	require.Same(t, upsConf.Upstreams[0], upsConf.Upstreams[1], "concurrent queries must share the same upstream instance")
 	dnsProxy := mustNew(t, &Config{
 		Logger:         testLogger,
 		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
