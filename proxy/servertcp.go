@@ -197,7 +197,7 @@ const errTooLarge errors.Error = "dns message is too large"
 // length from conn.
 func readPrefixed(conn net.Conn) (b []byte, err error) {
 	l := make([]byte, 2)
-	_, err = conn.Read(l)
+	_, err = io.ReadFull(conn, l)
 	if err != nil {
 		return nil, fmt.Errorf("reading len: %w", err)
 	}
@@ -232,7 +232,7 @@ func (p *Proxy) respondTCP(d *DNSContext) error {
 	}
 
 	err = writePrefixed(bytes, conn)
-	if err != nil && !errors.Is(err, net.ErrClosed) {
+	if err != nil {
 		return fmt.Errorf("writing message: %w", err)
 	}
 

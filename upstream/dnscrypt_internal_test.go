@@ -40,7 +40,7 @@ func TestUpstreamDNSCrypt(t *testing.T) {
 	address := stamp.String()
 	u, err := AddressToUpstream(address, &Options{
 		Logger:  testLogger,
-		Timeout: dialTimeout,
+		Timeout: 10 * time.Second,
 	})
 	require.NoError(t, err)
 	testutil.CleanupAndRequireSuccess(t, u.Close)

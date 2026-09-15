@@ -20,10 +20,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-// dialTimeout is the global timeout for establishing a TLS connection.
-// TODO(ameshkov): use bootstrap timeout instead.
-const dialTimeout = 10 * time.Second
-
 // dnsOverTLS implements the [Upstream] interface for the DNS-over-TLS protocol.
 type dnsOverTLS struct {
 	// addr is the DNS-over-TLS server URL.
@@ -50,6 +46,10 @@ type dnsOverTLS struct {
 	// This leads to weak performance for all exchanges coming across such
 	// connections.
 	conns []net.Conn
+
+	// timeout bounds one exchange, including bootstrap, handshake and retry.
+	// Zero adds no deadline.
+	timeout time.Duration
 }
 
 // newDoT returns the DNS-over-TLS Upstream.
@@ -82,6 +82,7 @@ func newDoT(addr *url.URL, opts *Options) (ups Upstream, err error) {
 		},
 		connsMu: &sync.Mutex{},
 		logger:  opts.Logger,
+		timeout: opts.Timeout,
 	}
 
 	runtime.SetFinalizer(tlsUps, (*dnsOverTLS).Close)
@@ -97,12 +98,19 @@ func (p *dnsOverTLS) Address() string { return p.addr.String() }
 
 // Exchange implements the [Upstream] interface for *dnsOverTLS.
 func (p *dnsOverTLS) Exchange(req *dns.Msg) (reply *dns.Msg, err error) {
+	ctx := context.Background()
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
+
 	h, err := p.getDialer()
 	if err != nil {
 		return nil, fmt.Errorf("getting conn to %s: %w", p.addr, err)
 	}
 
-	conn, err := p.conn(h)
+	conn, err := p.conn(ctx, h)
 	if err != nil {
 		return nil, fmt.Errorf("getting conn to %s: %w", p.addr, err)
 	}
@@ -115,9 +123,16 @@ func (p *dnsOverTLS) Exchange(req *dns.Msg) (reply *dns.Msg, err error) {
 
 		err = errors.WithDeferred(err, conn.Close())
 		p.logger.Debug("dot got bad conn from pool", "addr", p.addr, slogutil.KeyError, err)
+		if ctx.Err() != nil {
+			return nil, errors.Join(err, ctx.Err())
+		}
+		// A socket deadline can fire before the context timer is scheduled.
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return nil, errors.Join(err, context.DeadlineExceeded)
+		}
 
 		// Retry.
-		conn, err = tlsDial(h, p.tlsConf.Clone())
+		conn, err = tlsDial(ctx, h, p.tlsConf.Clone())
 		if err != nil {
 			return nil, fmt.Errorf(
 				"dialing %s: connecting to %s: %w",
@@ -158,11 +173,11 @@ func (p *dnsOverTLS) Close() (err error) {
 
 // conn returns the first available connection from the pool if there is any, or
 // dials a new one otherwise.
-func (p *dnsOverTLS) conn(h bootstrap.DialHandler) (conn net.Conn, err error) {
+func (p *dnsOverTLS) conn(ctx context.Context, h bootstrap.DialHandler) (conn net.Conn, err error) {
 	// Dial a new connection outside the lock, if needed.
 	defer func() {
 		if conn == nil {
-			conn, err = tlsDial(h, p.tlsConf.Clone())
+			conn, err = tlsDial(ctx, h, p.tlsConf.Clone())
 			err = errors.Annotate(err, "connecting to %s: %w", p.tlsConf.ServerName)
 		}
 	}()
@@ -177,12 +192,14 @@ func (p *dnsOverTLS) conn(h bootstrap.DialHandler) (conn net.Conn, err error) {
 
 	p.conns, conn = p.conns[:l-1], p.conns[l-1]
 
-	err = conn.SetDeadline(time.Now().Add(dialTimeout))
+	deadline, _ := ctx.Deadline()
+	err = conn.SetDeadline(deadline)
 	if err != nil {
 		p.logger.Debug("dot upstream setting deadline to conn from pool", slogutil.KeyError, err)
 
 		// If deadLine can't be updated it means that connection was already
 		// closed.
+		_ = conn.Close()
 		return nil, nil
 	}
 
@@ -224,24 +241,26 @@ func (p *dnsOverTLS) exchangeWithConn(conn net.Conn, req *dns.Msg) (reply *dns.M
 
 // tlsDial is basically the same as tls.DialWithDialer, but we will call our own
 // dialContext function to get connection.
-func tlsDial(dialContext bootstrap.DialHandler, conf *tls.Config) (c *tls.Conn, err error) {
+func tlsDial(ctx context.Context, dialContext bootstrap.DialHandler, conf *tls.Config) (c *tls.Conn, err error) {
 	// We're using bootstrapped address instead of what's passed to the
 	// function.
-	rawConn, err := dialContext(context.Background(), networkTCP, "")
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	rawConn, err := dialContext(ctx, networkTCP, "")
 	if err != nil {
 		return nil, err
 	}
 
-	// We want the timeout to cover the whole process: TCP connection and TLS
-	// handshake dialTimeout will be used as connection deadLine.
+	// The same exchange deadline covers dialing, handshake and DNS I/O.
 	conn := tls.Client(rawConn, conf)
-	err = conn.SetDeadline(time.Now().Add(dialTimeout))
+	deadline, _ := ctx.Deadline()
+	err = conn.SetDeadline(deadline)
 	if err != nil {
-		// Must not happen in normal circumstances.
-		panic(fmt.Errorf("dnsproxy: tls dial: setting deadline: %w", err))
+		return nil, errors.WithDeferred(err, conn.Close())
 	}
 
-	err = conn.Handshake()
+	err = conn.HandshakeContext(ctx)
 	if err != nil {
 		return nil, errors.WithDeferred(err, conn.Close())
 	}

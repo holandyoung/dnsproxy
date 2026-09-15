@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -167,7 +168,7 @@ func TestUpstream_dnsOverTLS_poolDeadline(t *testing.T) {
 	dialHandler, err := p.getDialer()
 	require.NoError(t, err)
 
-	usedConn, err := p.conn(dialHandler)
+	usedConn, err := p.conn(context.Background(), dialHandler)
 	require.NoError(t, err)
 	require.Same(t, usedConn, conn)
 
@@ -185,7 +186,7 @@ func TestUpstream_dnsOverTLS_poolDeadline(t *testing.T) {
 	require.Len(t, p.conns, 1)
 	conn = p.conns[0]
 
-	usedConn, err = p.conn(dialHandler)
+	usedConn, err = p.conn(context.Background(), dialHandler)
 	require.NoError(t, err)
 	require.Same(t, usedConn, conn)
 

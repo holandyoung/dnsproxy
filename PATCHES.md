@@ -15,6 +15,11 @@ fork revision directly; it does not replace the upstream module at build time.
 | `RequestMiddleware` and `ResponseHandler` | ACL, health handling, per-listener response shaping and observation must cover every parsed request, including native early responses and malformed-body UDP FORMERR. The wrapper sees final errors and intentional drops before normalization. | `TestRequestPipelineCoversNativeResponses`, `TestRequestPipelineObservesUDPWriteFailure` |
 | Custom handler without `UpstreamConfig` | An application-owned resolver must not create a dummy upstream configuration or transfer the same upstream ownership twice. A default handler still requires upstreams. | Real pipeline tests use only a custom handler |
 | Listener lifecycle | Failed starts must release bound HTTP/TCP/DNSCrypt listeners. Shutdown cancels the serving generation, closes accepted TCP/TLS/QUIC sockets and unblocks semaphore waits. Cancellation of a successful startup context does not terminate the service. | `TestStartFailureReleasesEveryBoundListener`, `TestShutdownClosesAcceptedStreamAtEveryReadBoundary` |
+| TCP framing | A stream read may return only one prefix byte. Read the complete two-byte length before decoding; preserve ordinary TCP/TLS segmentation. | `TestStreamAcceptsSplitLengthPrefix` |
+| UDP framing through connection owners | miekg/dns selects datagram framing by `net.PacketConn`, but routed connections only promise `net.Conn`. The explicit UDP boundary preserves datagram identity using the same connected socket, including retries. | `TestNetworkDialerWrappedUDPHasDatagramFraming` verifies exact outgoing wire bytes and closure |
+| HTTP version allowlist | H2-only must reject H1 before sending the DNS request; H1-only must use H1 even when the server also supports H2. Apply protocol selection to the actual connection and H3 preference probes. | `TestNetworkDialerHTTPVersionAllowlist` checks real request protocol, negative negotiation and socket closure |
+| DoT exchange deadline | The configured timeout covers bootstrap, dialing, handshake, pooled I/O and retry using one deadline. Zero adds no query deadline. Remove the implicit ten-second DoT limit. | `TestNetworkDialerDoTExchangeDeadline`, `TestNetworkDialerDoTHandshakeDeadline` |
+| Final stream write errors | A closed TCP socket must reach the final observer just like a failed UDP write. | `TestRequestPipelineObservesTCPWriteFailure` |
 | Native failure results | UDP truncation retains dnsproxy's native TCP retry result. No retained-UDP-answer fallback is added. | `TestNetworkDialerUDPTruncationReturnsTCPFailure`, `TestUpstream_plainDNS_fallbackToTCP` |
 
 DNSCrypt listeners remain supported. A DNSCrypt upstream with a custom dialer
@@ -37,6 +42,13 @@ master gate: formatting, module integrity, vet, the full shuffled/repeated race
 suite and vulnerability scanning. Protocol conformance uses real local servers
 and certificates, without assumptions about public providers or reserved IPs.
 No failed assertion is converted into a skip.
+The inherited caching-resolver suite still skips its `ip4`/`ip6` staleness
+subcases: native cache keys do not distinguish those lookup networks. The
+application-owned bootstrap path bypasses that native caching resolver. These
+skipped cases are not coverage of selective-family native bootstrap.
+
+Auxiliary H3 preference probes retain a ten-second bound when query timeouts
+are disabled; this only limits protocol probing, not the query deadline.
 
 Use a task branch, independent review of the exact commit, green local and PR
 checks, a PR to `master`, and CI verification of the resulting master commit.

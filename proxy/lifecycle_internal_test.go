@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"net"
 	"net/netip"
 	"testing"
@@ -133,5 +134,56 @@ func TestShutdownClosesAcceptedStreamAtEveryReadBoundary(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestStreamAcceptsSplitLengthPrefix(t *testing.T) {
+	for _, proto := range []Proto{ProtoTCP, ProtoTLS} {
+		t.Run(string(proto), func(t *testing.T) {
+			serverTLS, caPEM := newTLSConfig(t)
+			p := mustNew(t, &Config{
+				Logger: testLogger, RequestHandler: HandlerFunc(replyLocally), TLSConfig: serverTLS,
+				TCPListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+				TLSListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+			})
+			require.NoError(t, p.Start(context.Background()))
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				require.NoError(t, p.Shutdown(ctx))
+			}()
+			roots := x509.NewCertPool()
+			require.True(t, roots.AppendCertsFromPEM(caPEM))
+			client := &dns.Client{Net: "tcp", Timeout: time.Second}
+			if proto == ProtoTLS {
+				client.Net = "tcp-tls"
+				client.TLSConfig = &tls.Config{RootCAs: roots, ServerName: tlsServerName, MinVersion: tls.VersionTLS12}
+			}
+			conn, err := client.Dial(p.Addr(proto).String())
+			require.NoError(t, err)
+			defer conn.Close()
+			_, _, err = client.ExchangeWithConn(newTestMessage(), conn)
+			require.NoError(t, err)
+			query := newTestMessage()
+			body, err := query.Pack()
+			require.NoError(t, err)
+			wire := make([]byte, len(body)+2)
+			binary.BigEndian.PutUint16(wire, uint16(len(body)))
+			copy(wire[2:], body)
+			_, err = conn.Conn.Write(wire[:1])
+			require.NoError(t, err)
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(50*time.Millisecond)))
+			_, err = conn.Conn.Read(make([]byte, 1))
+			var networkError net.Error
+			require.ErrorAs(t, err, &networkError, "a partial prefix must stay open until the rest arrives")
+			require.True(t, networkError.Timeout())
+			require.NoError(t, conn.SetDeadline(time.Now().Add(time.Second)))
+			_, err = conn.Conn.Write(wire[1:])
+			require.NoError(t, err)
+			response, err := conn.ReadMsg()
+			require.NoError(t, err)
+			require.Equal(t, query.Id, response.Id)
+			require.Equal(t, query.Question, response.Question)
+		})
 	}
 }

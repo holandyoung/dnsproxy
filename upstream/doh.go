@@ -30,6 +30,10 @@ import (
 
 // Values to configure HTTP and HTTP/2 transport.
 const (
+	// probeTimeout bounds an auxiliary protocol probe when query timeouts are
+	// disabled. It never becomes a DoT or HTTP query deadline.
+	probeTimeout = 10 * time.Second
+
 	// transportDefaultReadIdleTimeout is the default timeout for pinging
 	// idle connections in HTTP/2 transport.
 	transportDefaultReadIdleTimeout = 30 * time.Second
@@ -79,9 +83,6 @@ type dnsOverHTTPS struct {
 
 	// quicConfMu protects quicConf.
 	quicConfMu *sync.Mutex
-
-	// transportH2 is an HTTP/2 transport if any.
-	transportH2 *http2.Transport
 
 	// addrRedacted is the redacted string representation of addr.  It is saved
 	// separately to reduce allocations during logging and error reporting.
@@ -211,9 +212,8 @@ func (p *dnsOverHTTPS) Close() (err error) {
 func (p *dnsOverHTTPS) closeClient(client *http.Client) (err error) {
 	if isHTTP3(client) {
 		return client.Transport.(io.Closer).Close()
-	} else if p.transportH2 != nil {
-		p.transportH2.CloseIdleConnections()
 	}
+	client.CloseIdleConnections()
 
 	return nil
 }
@@ -481,29 +481,59 @@ func (p *dnsOverHTTPS) createTransport() (t http.RoundTripper, err error) {
 		return nil, errors.Error("HTTP1/1 and HTTP2 are not supported by this upstream")
 	}
 
+	allowH1 := slices.Contains(p.tlsConf.NextProtos, string(HTTPVersion11))
+	allowH2 := slices.Contains(p.tlsConf.NextProtos, string(HTTPVersion2))
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(allowH1)
+	protocols.SetHTTP2(allowH2)
+	tlsConf.NextProtos = nil
+	if allowH2 {
+		tlsConf.NextProtos = append(tlsConf.NextProtos, string(HTTPVersion2))
+	}
+	if allowH1 {
+		tlsConf.NextProtos = append(tlsConf.NextProtos, string(HTTPVersion11))
+	}
+
 	transport := &http.Transport{
+		Protocols:          protocols,
 		TLSClientConfig:    tlsConf,
 		DisableCompression: true,
 		DialContext:        dialContext,
-		IdleConnTimeout:    transportDefaultIdleConnTimeout,
-		MaxConnsPerHost:    dohMaxConnsPerHost,
-		MaxIdleConns:       dohMaxIdleConns,
+		DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			conn, dialErr := tlsDial(ctx, dialContext, tlsConf.Clone())
+			if dialErr != nil {
+				return nil, dialErr
+			}
+			if !allowH1 && conn.ConnectionState().NegotiatedProtocol != string(HTTPVersion2) {
+				return nil, errors.WithDeferred(errors.Error("upstream did not negotiate required HTTP/2"), conn.Close())
+			}
+			// HTTP owns request deadlines and pooled connection reuse.
+			if dialErr = conn.SetDeadline(time.Time{}); dialErr != nil {
+				return nil, errors.WithDeferred(dialErr, conn.Close())
+			}
+			return conn, nil
+		},
+		IdleConnTimeout: transportDefaultIdleConnTimeout,
+		MaxConnsPerHost: dohMaxConnsPerHost,
+		MaxIdleConns:    dohMaxIdleConns,
 		// Since we have a custom DialContext, we need to use this field to make
 		// golang http.Client attempt to use HTTP/2. Otherwise, it would only be
 		// used when negotiated on the TLS level.
-		ForceAttemptHTTP2: true,
+		ForceAttemptHTTP2: allowH2,
 	}
 
 	// Explicitly configure transport to use HTTP/2.
 	//
 	// See https://github.com/AdguardTeam/dnsproxy/issues/11.
-	p.transportH2, err = http2.ConfigureTransports(transport)
-	if err != nil {
-		return nil, err
+	if allowH2 {
+		var transportH2 *http2.Transport
+		transportH2, err = http2.ConfigureTransports(transport)
+		if err != nil {
+			return nil, err
+		}
+		// Enable HTTP/2 pings on idle connections.
+		transportH2.ReadIdleTimeout = transportDefaultReadIdleTimeout
 	}
-
-	// Enable HTTP/2 pings on idle connections.
-	p.transportH2.ReadIdleTimeout = transportDefaultReadIdleTimeout
 
 	return transport, nil
 }
@@ -672,7 +702,7 @@ func (p *dnsOverHTTPS) probeQUIC(addr string, tlsConfig *tls.Config, ch chan err
 
 	t := p.timeout
 	if t == 0 {
-		t = dialTimeout
+		t = probeTimeout
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(t))
 	defer cancel()
@@ -697,9 +727,21 @@ func (p *dnsOverHTTPS) probeQUIC(addr string, tlsConfig *tls.Config, ch chan err
 func (p *dnsOverHTTPS) probeTLS(dialContext bootstrap.DialHandler, tlsConfig *tls.Config, ch chan error) {
 	startTime := time.Now()
 
-	conn, err := tlsDial(dialContext, tlsConfig)
+	t := p.timeout
+	if t == 0 {
+		t = probeTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), t)
+	defer cancel()
+	conn, err := tlsDial(ctx, dialContext, tlsConfig)
 	if err != nil {
 		ch <- fmt.Errorf("opening TLS connection: %w", err)
+		return
+	}
+	if !slices.Contains(p.tlsConf.NextProtos, string(HTTPVersion11)) &&
+		conn.ConnectionState().NegotiatedProtocol != string(HTTPVersion2) {
+		_ = conn.Close()
+		ch <- errors.Error("TLS probe did not negotiate required HTTP/2")
 		return
 	}
 

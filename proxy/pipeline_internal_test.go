@@ -280,3 +280,27 @@ func TestRequestPipelineObservesUDPWriteFailure(t *testing.T) {
 	p.udpHandlePacket(context.Background(), wire, localhostAnyPort.Addr(), net.UDPAddrFromAddrPort(localhostAnyPort), conn)
 	require.True(t, errors.Is(observed, net.ErrClosed), "a lost write must not look successful to observation")
 }
+
+func TestRequestPipelineObservesTCPWriteFailure(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(localhostAnyPort))
+	require.NoError(t, err)
+	defer listener.Close()
+	client, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	require.NoError(t, err)
+	defer client.Close()
+	server, err := listener.Accept()
+	require.NoError(t, err)
+	require.NoError(t, server.Close())
+	var observed error
+	p := mustNew(t, &Config{Logger: testLogger, RequestHandler: HandlerFunc(replyLocally), RequestMiddleware: func(next Handler) Handler {
+		return HandlerFunc(func(ctx context.Context, p *Proxy, d *DNSContext) error {
+			observed = next.ServeDNS(ctx, p, d)
+			return observed
+		})
+	}})
+	d := p.newDNSContext(ProtoTCP, newTestMessage(), localhostAnyPort)
+	d.Conn = server
+	err = p.handleDNSRequest(context.Background(), d)
+	require.ErrorIs(t, err, net.ErrClosed)
+	require.ErrorIs(t, observed, net.ErrClosed, "a closed TCP write must not appear successful")
+}
