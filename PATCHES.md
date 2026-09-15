@@ -18,7 +18,7 @@ fork revision directly; it does not replace the upstream module at build time.
 | TCP framing | A stream read may return only one prefix byte. Read the complete two-byte length before decoding; preserve ordinary TCP/TLS segmentation. | `TestStreamAcceptsSplitLengthPrefix` |
 | UDP framing through connection owners | miekg/dns selects datagram framing by `net.PacketConn`, but routed connections only promise `net.Conn`. The explicit UDP boundary preserves datagram identity using the same connected socket, including retries. | `TestNetworkDialerWrappedUDPHasDatagramFraming` verifies exact outgoing wire bytes and closure |
 | HTTP version allowlist | H2-only must reject H1 before sending the DNS request; H1-only must use H1 even when the server also supports H2. Apply protocol selection to the actual connection and H3 preference probes. | `TestNetworkDialerHTTPVersionAllowlist` checks real request protocol, negative negotiation and socket closure |
-| DoT exchange deadline | The configured timeout covers bootstrap, dialing, handshake, pooled I/O and retry using one deadline. Zero adds no query deadline. Remove the implicit ten-second DoT limit. | `TestNetworkDialerDoTExchangeDeadline`, `TestNetworkDialerDoTHandshakeDeadline` |
+| DoT exchange deadline | Dialing, handshake, pooled I/O and retry use one deadline; application-owned bootstrap receives that deadline through NetworkDialer. Zero adds no query deadline. Remove the implicit ten-second DoT limit. | `TestNetworkDialerDoTExchangeDeadline`, `TestNetworkDialerDoTHandshakeDeadline` |
 | Final stream write errors | A closed TCP socket must reach the final observer just like a failed UDP write. | `TestRequestPipelineObservesTCPWriteFailure` |
 | Native failure results | UDP truncation retains dnsproxy's native TCP retry result. No retained-UDP-answer fallback is added. | `TestNetworkDialerUDPTruncationReturnsTCPFailure`, `TestUpstream_plainDNS_fallbackToTCP` |
 
@@ -49,6 +49,12 @@ skipped cases are not coverage of selective-family native bootstrap.
 
 Auxiliary H3 preference probes retain a ten-second bound when query timeouts
 are disabled; this only limits protocol probing, not the query deadline.
+Native bootstrap resolvers retain their own wait/timeout behavior: elapsed
+bootstrap time consumes the DoT budget, but a Resolver that ignores its context
+cannot be forcibly interrupted. HyperCacheDNS owns bootstrap in NetworkDialer;
+it must verify that its actual work respects the supplied deadline. Native
+ordered-bootstrap tests use short individual bootstrap budgets within the
+query budget and prove both failure-then-success and first-success termination.
 
 Use a task branch, independent review of the exact commit, green local and PR
 checks, a PR to `master`, and CI verification of the resulting master commit.

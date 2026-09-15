@@ -213,6 +213,8 @@ func TestNetworkDialerDoTExchangeDeadline(t *testing.T) {
 			}
 			if mode == "zero" {
 				require.NoError(t, err)
+				require.Len(t, route.opened, 1)
+				require.True(t, (<-route.opened).lastDeadline().IsZero(), "zero must not install an implicit socket deadline")
 			} else {
 				require.Error(t, err)
 				var netErr net.Error

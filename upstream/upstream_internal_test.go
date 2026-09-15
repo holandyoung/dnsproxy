@@ -364,64 +364,67 @@ func TestUpstreamDoTBootstrap(t *testing.T) {
 	}
 }
 
-// Test for DoH and DoT upstreams with two bootstraps (only one is valid)
+// TestUpstreamsInvalidBootstrap exercises the native ordered bootstrap with
+// real local failed and successful servers. Bootstrap attempts have their own
+// short timeout within the larger query budget.
 func TestUpstreamsInvalidBootstrap(t *testing.T) {
-	t.Parallel()
-
-	upstreams := []struct {
-		address   string
-		bootstrap []string
-	}{{
-		address:   "tls://dns.adguard.com",
-		bootstrap: []string{"1.1.1.1:555", "8.8.8.8:53"},
-	}, {
-		address:   "tls://dns.adguard.com:853",
-		bootstrap: []string{"1.0.0.1", "8.8.8.8:535"},
-	}, {
-		address:   "https://1dot1dot1dot1.cloudflare-dns.com/dns-query",
-		bootstrap: []string{"8.8.8.1", "1.0.0.1"},
-	}, {
-		// Cloudflare DNS (DoH)
-		address:   "sdns://AgcAAAAAAAAABzEuMC4wLjGgENk8mGSlIfMGXMOlIlCcKvq7AVgcrZxtjon911-ep0cg63Ul-I8NlFj4GplQGb_TTLiczclX57DvMV8Q-JdjgRgSZG5zLmNsb3VkZmxhcmUuY29tCi9kbnMtcXVlcnk",
-		bootstrap: []string{"8.8.8.8:53", "8.8.8.1:53"},
-	}, {
-		// AdGuard DNS (DNS-over-TLS)
-		address:   "sdns://AwAAAAAAAAAAAAAPZG5zLmFkZ3VhcmQuY29t",
-		bootstrap: []string{"1.2.3.4:55", "8.8.8.8"},
-	}}
-
-	l := testLogger
-
-	for _, tc := range upstreams {
-		t.Run(tc.address, func(t *testing.T) {
-			t.Parallel()
-
-			var rslv ConsequentResolver
-			for _, b := range tc.bootstrap {
-				r, err := NewUpstreamResolver(b, &Options{
-					Logger:  l,
-					Timeout: testTimeout,
+	answer := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		require.NoError(testutil.PanicT{}, w.WriteMsg(respondToTestMessage(r)))
+	})
+	dot := startDoTServer(t, answer)
+	doh := startDoHServer(t, testDoHServerOptions{})
+	dotName := fmt.Sprintf("resolver.test:%d", dot.port)
+	dohName := strings.Replace(doh.addr, "127.0.0.1", "resolver.test", 1)
+	for _, tc := range []struct {
+		name, address string
+		roots         *x509.CertPool
+	}{
+		{"dot", "tls://" + dotName, dot.rootCAs},
+		{"doh", "https://" + dohName + "/dns-query", doh.rootCAs},
+		{"stamp_dot", (&dnsstamps.ServerStamp{Proto: dnsstamps.StampProtoTypeTLS, ProviderName: dotName}).String(), dot.rootCAs},
+		{"stamp_doh", (&dnsstamps.ServerStamp{Proto: dnsstamps.StampProtoTypeDoH, ProviderName: dohName, Path: "/dns-query"}).String(), doh.rootCAs},
+	} {
+		for _, badFirst := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/bad_first_%t", tc.name, badFirst), func(t *testing.T) {
+				var failedCalls, goodCalls atomic.Int32
+				failed := startDNSServer(t, func(dns.ResponseWriter, *dns.Msg) { failedCalls.Add(1) })
+				defer failed.Close()
+				good := startDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+					goodCalls.Add(1)
+					response := new(dns.Msg).SetReply(r)
+					if r.Question[0].Qtype == dns.TypeA {
+						response.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("127.0.0.1")}}
+					}
+					require.NoError(testutil.PanicT{}, w.WriteMsg(response))
 				})
+				defer good.Close()
+				ports := []int{failed.port, good.port}
+				if !badFirst {
+					ports[0], ports[1] = ports[1], ports[0]
+				}
+				var resolvers ConsequentResolver
+				for _, port := range ports {
+					resolver, err := NewUpstreamResolver(fmt.Sprintf("127.0.0.1:%d", port), &Options{Logger: testLogger, Timeout: 20 * time.Millisecond})
+					require.NoError(t, err)
+					defer resolver.Close()
+					resolvers = append(resolvers, NewCachingResolver(resolver))
+				}
+				u, err := AddressToUpstream(tc.address, &Options{Logger: testLogger, Bootstrap: resolvers, RootCAs: tc.roots, ServerName: "127.0.0.1", Timeout: time.Second})
 				require.NoError(t, err)
-
-				rslv = append(rslv, NewCachingResolver(r))
-			}
-
-			u, err := AddressToUpstream(tc.address, &Options{
-				Logger:    l,
-				Bootstrap: rslv,
-				Timeout:   testTimeout,
+				defer u.Close()
+				checkUpstream(t, u, tc.address)
+				require.Positive(t, goodCalls.Load(), "success must use the actual native bootstrap")
+				if badFirst {
+					require.Positive(t, failedCalls.Load(), "first bootstrap must actually fail before continuing")
+				} else {
+					require.Zero(t, failedCalls.Load(), "ordered bootstrap stops at the first usable result")
+				}
 			})
-			require.NoErrorf(t, err, "failed to generate upstream from address %s", tc.address)
-			testutil.CleanupAndRequireSuccess(t, u.Close)
-
-			checkUpstream(t, u, tc.address)
-		})
+		}
 	}
-
 	t.Run("bad_bootstrap", func(t *testing.T) {
 		_, err := NewUpstreamResolver("asdfasdf", nil)
-		assert.Error(t, err) // bad bootstrap "asdfasdf"
+		require.Error(t, err)
 	})
 }
 

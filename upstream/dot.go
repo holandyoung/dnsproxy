@@ -47,8 +47,9 @@ type dnsOverTLS struct {
 	// connections.
 	conns []net.Conn
 
-	// timeout bounds one exchange, including bootstrap, handshake and retry.
-	// Zero adds no deadline.
+	// timeout supplies one deadline for dialing, handshake, I/O and retry.
+	// Native bootstrap consumes elapsed budget but owns its own blocking wait;
+	// custom NetworkDialer bootstrap receives this deadline. Zero adds none.
 	timeout time.Duration
 }
 
