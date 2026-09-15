@@ -189,7 +189,7 @@ func (p *dnsOverQUIC) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Ms
 	// Failure to use a cached connection should be handled gracefully as this
 	// connection could have been closed by the server or simply be broken due
 	// to how UDP NAT works.  In this case the connection should be re-created.
-	if cached && err != nil && !errors.Is(err, errDoQProtocol) {
+	if cached && err != nil && !errors.Is(err, errDoQProtocol) && !isExchangeTimeout(err) {
 		p.logger.Debug("recreating the quic connection and retrying", slogutil.KeyError, err)
 
 		// Close the active connection to make sure the cached connection is

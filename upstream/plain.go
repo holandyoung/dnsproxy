@@ -200,7 +200,7 @@ func setRequestForNetwork(orig *dns.Msg, conn *dns.Conn, network network) (req *
 func isExpectedConnErr(err error) (is bool) {
 	var netErr net.Error
 
-	return err != nil && (errors.As(err, &netErr) || errors.Is(err, io.EOF))
+	return err != nil && !isExchangeTimeout(err) && (errors.As(err, &netErr) || errors.Is(err, io.EOF))
 }
 
 // Exchange implements the [Upstream] interface for *plainDNS.

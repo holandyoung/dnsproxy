@@ -1,8 +1,10 @@
 package upstream
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 
 	"github.com/miekg/dns"
 )
@@ -10,6 +12,13 @@ import (
 // A complete DNS frame rejected by the codec or protocol is not a failed
 // connection. Retrying it could turn the rejected answer into success.
 var errDNSProtocol = errors.New("invalid DNS response")
+
+// A timeout ends this exchange. Rebuilding a retained transport may help a
+// later query, but must not grant this query another request after its timeout.
+func isExchangeTimeout(err error) bool {
+	var netErr net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr) && netErr.Timeout()
+}
 
 // readDNSResponse uses the native DNS connection's datagram/stream framing and
 // exposes the complete-frame boundary before Unpack.  These upstreams do not

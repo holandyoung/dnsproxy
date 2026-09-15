@@ -357,14 +357,8 @@ func (p *dnsOverHTTPS) shouldRetry(err error) (ok bool) {
 		return false
 	}
 
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		// If this is a timeout error, trying to forcibly re-create the HTTP
-		// client instance.  This is an attempt to fix an issue with DoH client
-		// stalling after a network change.
-		//
-		// See https://github.com/AdguardTeam/AdGuardHome/issues/3217.
-		return true
+	if isExchangeTimeout(err) {
+		return false
 	}
 
 	if isQUICRetryError(err) {

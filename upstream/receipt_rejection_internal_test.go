@@ -20,7 +20,7 @@ import (
 // Rejections must be exercised after successful reuse: a cold connection does
 // not enter the native reconnect branch. A replay would get a valid response.
 func TestReceiptDoQCachedRejectionDoesNotReplay(t *testing.T) {
-	for _, mode := range []string{"empty FIN", "short prefix", "zero length", "short frame", "malformed", "extra byte", "extra frame", "wrong ID", "wrong question", "connection failure"} {
+	for _, mode := range []string{"empty FIN", "short prefix", "zero length", "short frame", "malformed", "extra byte", "extra frame", "wrong ID", "wrong question", "missing FIN", "connection failure"} {
 		t.Run(mode, func(t *testing.T) {
 			u, calls := receiptDoQPeer(t, mode)
 			_, err := u.Exchange(createTestMessage(), nil)
@@ -36,8 +36,13 @@ func TestReceiptDoQCachedRejectionDoesNotReplay(t *testing.T) {
 				require.NoError(t, result.Err)
 				require.Equal(t, int32(3), calls.Load(), "one real connection failure may reconnect")
 			} else {
-				require.ErrorIs(t, err, errDoQProtocol)
-				require.ErrorIs(t, result.Err, errDoQProtocol)
+				if mode == "missing FIN" {
+					require.True(t, isExchangeTimeout(err))
+					require.True(t, isExchangeTimeout(result.Err))
+				} else {
+					require.ErrorIs(t, err, errDoQProtocol)
+					require.ErrorIs(t, result.Err, errDoQProtocol)
+				}
 				require.Equal(t, int32(2), calls.Load(), "warmup and rejected response only")
 				require.Nil(t, result.Response)
 			}
@@ -122,6 +127,9 @@ func receiptDoQPeer(t *testing.T, mode string) (Upstream, *atomic.Int32) {
 					if _, err = stream.Write(frame); err != nil {
 						return
 					}
+					if bad && mode == "missing FIN" {
+						continue
+					}
 					_ = stream.Close()
 				}
 			}()
@@ -147,6 +155,94 @@ func receiptDoQPeer(t *testing.T, mode string) (Upstream, *atomic.Int32) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, u.Close()) })
 	return u, &calls
+}
+
+func TestReceiptDoHTimeoutDoesNotReplay(t *testing.T) {
+	for _, protocol := range []HTTPVersion{HTTPVersion11, HTTPVersion2, HTTPVersion3} {
+		t.Run(string(protocol), func(t *testing.T) {
+			var calls atomic.Int32
+			release := make(chan struct{})
+			server := startDoHServer(t, testDoHServerOptions{http3Enabled: protocol == HTTPVersion3, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wire, err := base64.RawURLEncoding.DecodeString(r.URL.Query().Get("dns"))
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				req := new(dns.Msg)
+				if err = req.Unpack(wire); err != nil {
+					t.Error(err)
+					return
+				}
+				wire, err = respondToTestMessage(req).Pack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				w.Header().Set("Content-Type", "application/dns-message")
+				if calls.Add(1) == 2 {
+					_, _ = w.Write(wire[:12])
+					w.(http.Flusher).Flush()
+					<-release
+					return
+				}
+				_, _ = w.Write(wire)
+			})})
+			t.Cleanup(func() { close(release) })
+			scheme := "https://"
+			if protocol == HTTPVersion3 {
+				scheme = "h3://"
+			}
+			u, err := AddressToUpstream(scheme+server.addr+"/dns-query", &Options{RootCAs: server.rootCAs, HTTPVersions: []HTTPVersion{protocol}, Timeout: 300 * time.Millisecond, Logger: testLogger})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, u.Close()) })
+			_, err = u.Exchange(createTestMessage(), nil)
+			require.NoError(t, err)
+			require.Equal(t, int32(1), calls.Load())
+			state := NewExchangeState(time.Now().Add(2 * time.Second))
+			started := time.Now()
+			_, err = u.Exchange(createTestMessage(), state)
+			result, ready := state.Result()
+			require.True(t, ready)
+			// Native H3 may report its local stream cancellation instead of
+			// wrapping net.Error. The held body and elapsed client timeout
+			// establish the cause without requiring one transport's error type.
+			require.GreaterOrEqual(t, time.Since(started), 300*time.Millisecond)
+			require.Error(t, err)
+			require.Error(t, result.Err)
+			require.Equal(t, int32(2), calls.Load(), "one warmup and one timed-out body; no retry")
+		})
+	}
+}
+
+func TestReceiptPlainTimeoutDoesNotReplay(t *testing.T) {
+	for _, network := range []string{"udp", "tcp"} {
+		t.Run(network, func(t *testing.T) {
+			var calls atomic.Int32
+			release := make(chan struct{})
+			server := startDNSServer(t, func(w dns.ResponseWriter, req *dns.Msg) {
+				if calls.Add(1) == 2 {
+					<-release
+					return
+				}
+				_ = w.WriteMsg(respondToTestMessage(req))
+			})
+			t.Cleanup(func() { require.NoError(t, server.Close()) })
+			t.Cleanup(func() { close(release) })
+			u, err := AddressToUpstream(fmt.Sprintf("%s://127.0.0.1:%d", network, server.port), &Options{Timeout: 300 * time.Millisecond, Logger: testLogger})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, u.Close()) })
+			_, err = u.Exchange(createTestMessage(), nil)
+			require.NoError(t, err)
+			require.Equal(t, int32(1), calls.Load())
+			state := NewExchangeState(time.Now().Add(2 * time.Second))
+			_, err = u.Exchange(createTestMessage(), state)
+			result, ready := state.Result()
+			require.True(t, ready)
+			require.True(t, isExchangeTimeout(err), "%v", err)
+			require.True(t, isExchangeTimeout(result.Err), "%v", result.Err)
+			require.Equal(t, int32(2), calls.Load(), "one warmup and one timeout; no retry")
+		})
+	}
 }
 
 func TestReceiptDoTCachedRejectionDoesNotReplay(t *testing.T) {

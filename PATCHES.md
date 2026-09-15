@@ -18,6 +18,13 @@ deviations preserve HyperCacheDNS's established rejection policy. Evidence:
 response and count application queries; real connection-failure controls still
 recover. TCP and encrypted-protocol TC policy remains an application decision.
 
+An exchange timeout is also final: UDP/TCP, DoQ, and DoH no longer explicitly
+retry timeout errors. Actual warm missing-FIN and HTTP partial-body tests plus
+plain unanswered queries assert no extra request after the native timeout.
+This does not redefine every native phase as one physical wall-clock budget:
+bootstrap and the H3 preference probe retain the limits described below, while
+the application owns its member/group acceptance cutoff through ExchangeState.
+
 | Boundary | Reason for the change | Evidence |
 | --- | --- | --- |
 | `upstream.Options.NetworkDialer` | The application owns bootstrap, routes, SOCKS associations and physical shutdown. Native QUIC discarded a UDP connection and redialed directly, bypassing packet wrappers. One `dialQUIC` now covers DoQ, HTTP/3 and probes with the actual `net.PacketConn`. Routing errors never authorize another route. | `TestNetworkDialerDoQOwnsActualPacketConnection`, `TestNetworkDialerHTTP3CoversPreferenceProbeAndActualConnection` |
