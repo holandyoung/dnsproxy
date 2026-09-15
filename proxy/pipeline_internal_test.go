@@ -37,15 +37,14 @@ func TestRequestPipelineAcrossEncryptedListeners(t *testing.T) {
 	require.NoError(t, err)
 	cert, err := resolver.NewCert()
 	require.NoError(t, err)
-	cryptAddr := freeUDPAddress(t)
 	observed := make(chan pipelineTrace, 1)
 	p := mustNew(t, &Config{
 		Logger: testLogger, TLSConfig: serverTLS, RefuseAny: true,
 		TLSListenAddr:         []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
 		QUICListenAddr:        []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
 		HTTPConfig:            &HTTPConfig{ListenAddresses: []netip.AddrPort{localhostAnyPort}, HTTP3Enabled: true},
-		DNSCryptUDPListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(cryptAddr)},
-		DNSCryptTCPListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(cryptAddr)},
+		DNSCryptUDPListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		DNSCryptTCPListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
 		DNSCryptProviderName:  resolver.ProviderName, DNSCryptResolverCert: cert,
 		RequestHandler: HandlerFunc(replyLocally),
 		RequestMiddleware: func(next Handler) Handler {
@@ -76,8 +75,8 @@ func TestRequestPipelineAcrossEncryptedListeners(t *testing.T) {
 		{"doh2", "https://" + p.Addr(ProtoHTTPS).String() + "/dns-query", ProtoHTTPS, []upstream.HTTPVersion{upstream.HTTPVersion2}},
 		{"doh3", "h3://" + p.Addr(ProtoHTTPS).String() + "/dns-query", ProtoHTTPS, nil},
 		{"doq", "quic://" + p.Addr(ProtoQUIC).String(), ProtoQUIC, nil},
-		{"dnscrypt_udp", "", ProtoDNSCrypt, nil},
-		{"dnscrypt_tcp", "", ProtoDNSCrypt, nil},
+		{"dnscrypt_udp", p.Addrs(ProtoDNSCrypt)[0].String(), ProtoDNSCrypt, nil},
+		{"dnscrypt_tcp", p.Addrs(ProtoDNSCrypt)[1].String(), ProtoDNSCrypt, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,7 +87,7 @@ func TestRequestPipelineAcrossEncryptedListeners(t *testing.T) {
 					protocol = dnscrypt.ProtoTCP
 				}
 				client := dnscrypt.NewClient(&dnscrypt.ClientConfig{Logger: testLogger, Proto: protocol})
-				stamp, stampErr := resolver.CreateStamp(cryptAddr.String())
+				stamp, stampErr := resolver.CreateStamp(tc.address)
 				require.NoError(t, stampErr)
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
@@ -114,7 +113,11 @@ func TestRequestPipelineAcrossEncryptedListeners(t *testing.T) {
 				case trace := <-observed:
 					require.NoError(t, trace.err)
 					require.Equal(t, []string{"entry", "prepare", "exit"}, trace.stages)
-					require.Equal(t, p.Addr(tc.proto).String(), trace.local)
+					local := p.Addr(tc.proto).String()
+					if tc.proto == ProtoDNSCrypt {
+						local = tc.address
+					}
+					require.Equal(t, local, trace.local)
 				case <-time.After(time.Second):
 					t.Fatal("encrypted listener bypassed the pipeline")
 				}

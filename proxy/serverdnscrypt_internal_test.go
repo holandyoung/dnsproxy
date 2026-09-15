@@ -6,11 +6,9 @@ import (
 
 	"github.com/AdguardTeam/dnscrypt"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
-	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
 	"github.com/ameshkov/dnsstamps"
-	"github.com/holandyoung/dnsproxy/internal/dnsproxytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,15 +20,16 @@ func TestDNSCryptProxy(t *testing.T) {
 
 	servicetest.RequireRun(t, dnsProxy, testTimeout)
 
-	// Generate a DNS stamp.
-	port := testutil.RequireTypeAssert[*net.UDPAddr](t, dnsProxy.Addr(ProtoDNSCrypt)).Port
-	addr := netutil.JoinHostPort(listenIP, uint16(port))
-	stamp, err := rc.CreateStamp(addr)
-	require.NoError(t, err)
+	// Each listener owns its ephemeral port. Shared-port fallback is exercised
+	// by the upstream DNSCrypt truncation test using the paired server fixture.
+	addresses := dnsProxy.Addrs(ProtoDNSCrypt)
+	require.Len(t, addresses, 2)
+	for i, proto := range []dnscrypt.Proto{dnscrypt.ProtoUDP, dnscrypt.ProtoTCP} {
+		stamp, err := rc.CreateStamp(addresses[i].String())
+		require.NoError(t, err)
+		checkDNSCryptProxy(t, proto, stamp)
+	}
 
-	// Test DNSCrypt proxy on both UDP and TCP.
-	checkDNSCryptProxy(t, dnscrypt.ProtoUDP, stamp)
-	checkDNSCryptProxy(t, dnscrypt.ProtoTCP, stamp)
 }
 
 // newTestDNSCryptProxy is a helper function that creates a DNSCrypt proxy and
@@ -44,15 +43,14 @@ func newTestDNSCryptProxy(tb testing.TB) (p *Proxy, rc dnscrypt.ResolverConfig) 
 	cert, err := rc.NewCert()
 	require.NoError(tb, err)
 
-	port := dnsproxytest.NewFreePort(tb)
 	upstreamConf := newTestUpstreamConfig(tb, defaultTimeout, testDefaultUpstreamAddr(tb))
 	p = mustNew(tb, &Config{
 		Logger: testLogger,
 		DNSCryptUDPListenAddr: []*net.UDPAddr{{
-			Port: int(port), IP: net.ParseIP(listenIP),
+			Port: 0, IP: net.ParseIP(listenIP),
 		}},
 		DNSCryptTCPListenAddr: []*net.TCPAddr{{
-			Port: int(port), IP: net.ParseIP(listenIP),
+			Port: 0, IP: net.ParseIP(listenIP),
 		}},
 		UpstreamConfig:         upstreamConf,
 		TrustedProxies:         defaultTrustedProxies,
