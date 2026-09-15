@@ -107,7 +107,7 @@ func (u *errUpstream) Address() string {
 }
 
 // Exchange implements the [upstream.Upstream] interface for *errUpstream.
-func (u *errUpstream) Exchange(_ *dns.Msg) (*dns.Msg, error) {
+func (u *errUpstream) Exchange(_ *dns.Msg, state *upstream.ExchangeState) (*dns.Msg, error) {
 	return nil, u.err
 }
 
@@ -125,7 +125,7 @@ type testAUpstream struct {
 var _ upstream.Upstream = (*testAUpstream)(nil)
 
 // Exchange implements the [upstream.Upstream] interface for *testAUpstream.
-func (u *testAUpstream) Exchange(m *dns.Msg) (resp *dns.Msg, err error) {
+func (u *testAUpstream) Exchange(m *dns.Msg, state *upstream.ExchangeState) (resp *dns.Msg, err error) {
 	resp = &dns.Msg{}
 	resp.SetReply(m)
 

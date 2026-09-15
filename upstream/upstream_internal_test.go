@@ -96,7 +96,7 @@ func TestUpstream_bootstrapTimeout(t *testing.T) {
 			req := createTestMessage()
 
 			start := time.Now()
-			_, rErr := u.Exchange(req)
+			_, rErr := u.Exchange(req, nil)
 			elapsed := time.Since(start)
 
 			// Require an error, since the bootstrap server cannot work.
@@ -580,7 +580,7 @@ func checkUpstream(tb testing.TB, u Upstream, addr string) {
 	tb.Helper()
 
 	req := createTestMessage()
-	reply, err := u.Exchange(req)
+	reply, err := u.Exchange(req, nil)
 	require.NoErrorf(tb, err, "couldn't talk to upstream %s", addr)
 
 	requireResponse(tb, req, reply)
@@ -601,7 +601,7 @@ func checkRaceCondition(u Upstream) {
 		for range reqCount {
 			req := createTestMessage()
 			// Ignore exchange errors here, the point is to check for races.
-			_, _ = u.Exchange(req)
+			_, _ = u.Exchange(req, nil)
 		}
 	}
 

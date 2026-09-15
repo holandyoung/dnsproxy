@@ -254,7 +254,7 @@ func TestUpstreamDoH_serverRestart(t *testing.T) {
 			require.False(t, t.Failed())
 
 			t.Run("retry", func(t *testing.T) {
-				_, err := u.Exchange(createTestMessage())
+				_, err := u.Exchange(createTestMessage(), nil)
 				require.Error(t, err)
 
 				_ = startDoHServer(t, testDoHServerOptions{
@@ -291,7 +291,7 @@ func TestUpstreamDoH_0RTT(t *testing.T) {
 	req := createTestMessage()
 
 	// Trigger connection to a DoH3 server.
-	resp, err := uh.Exchange(req)
+	resp, err := uh.Exchange(req, nil)
 	require.NoError(t, err)
 	requireResponse(t, req, resp)
 
@@ -307,7 +307,7 @@ func TestUpstreamDoH_0RTT(t *testing.T) {
 	}()
 
 	// Trigger second connection.
-	resp, err = uh.Exchange(req)
+	resp, err = uh.Exchange(req, nil)
 	require.NoError(t, err)
 	requireResponse(t, req, resp)
 

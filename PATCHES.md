@@ -7,6 +7,24 @@ fork revision directly; it does not replace the upstream module at build time.
 
 ## Required semantics and deviations
 
+Complete protocol rejections never authorize a hidden query replay. Native
+DoT/DoQ reconnect only for connection failures on a retained connection; DNS
+codec/question/ID errors and DoQ invalid framing/FIN are final. DoH clients
+reject redirects before visiting the destination on H1, H2 and H3. These
+deviations preserve HyperCacheDNS's established rejection policy. Evidence:
+`TestReceiptDoQCachedRejectionDoesNotReplay`,
+`TestReceiptDoTCachedRejectionDoesNotReplay`, and
+`TestReceiptDoHRedirectDoesNotReplay` warm actual connections before the bad
+response and count application queries; real connection-failure controls still
+recover. TCP and encrypted-protocol TC policy remains an application decision.
+
+An exchange timeout is also final: UDP/TCP, DoQ, and DoH no longer explicitly
+retry timeout errors. Actual warm missing-FIN and HTTP partial-body tests plus
+plain unanswered queries assert no extra request after the native timeout.
+This does not redefine every native phase as one physical wall-clock budget:
+bootstrap and the H3 preference probe retain the limits described below, while
+the application owns its member/group acceptance cutoff through ExchangeState.
+
 | Boundary | Reason for the change | Evidence |
 | --- | --- | --- |
 | `upstream.Options.NetworkDialer` | The application owns bootstrap, routes, SOCKS associations and physical shutdown. Native QUIC discarded a UDP connection and redialed directly, bypassing packet wrappers. One `dialQUIC` now covers DoQ, HTTP/3 and probes with the actual `net.PacketConn`. Routing errors never authorize another route. | `TestNetworkDialerDoQOwnsActualPacketConnection`, `TestNetworkDialerHTTP3CoversPreferenceProbeAndActualConnection` |
@@ -21,10 +39,48 @@ fork revision directly; it does not replace the upstream module at build time.
 | DoT exchange deadline | Dialing, handshake, pooled I/O and retry use one deadline; application-owned bootstrap receives that deadline through NetworkDialer. Zero adds no query deadline. Remove the implicit ten-second DoT limit. | `TestNetworkDialerDoTExchangeDeadline`, `TestNetworkDialerDoTHandshakeDeadline` |
 | Final stream write errors | A closed TCP socket must reach the final observer just like a failed UDP write. | `TestRequestPipelineObservesTCPWriteFailure` |
 | Native failure results | UDP truncation retains dnsproxy's native TCP retry result. No retained-UDP-answer fallback is added. | `TestNetworkDialerUDPTruncationReturnsTCPFailure`, `TestUpstream_plainDNS_fallbackToTCP` |
+| Complete-message receipt | Cache TTL and logical member cutoffs use the complete response observation, before decoding and cleanup. A returned timestamp alone cannot preserve a timely answer when native Close blocks. The single `Exchange(req, state)` signature carries an invocation-local decision owner; old callers explicitly pass nil. | `TestReceiptPublishedBeforeRealConnectionCleanup`, `TestReceiptDoHBeforeNativeH2BodyClose`, `TestReceiptAcrossConcurrentNativeProtocols` |
+| DoQ completion and response ID | Require one complete frame followed by FIN and reject extra bytes or nonzero wire ID before restoring the caller's ID. The prior frame-only reader accepted incomplete transactions. The original request is no longer mutated. | `TestReceiptDoQRequiresCompleteFrameAndFIN`; [RFC 9250 sections 4.2 and 4.3](https://www.rfc-editor.org/rfc/rfc9250.html#section-4.2) |
+| DoH response boundary | Validate HTTP status, DNS media type and complete bounded body before candidate admission. A prefix, response headers or a body exceeding 65535 bytes is not a complete DNS response. | Native H1/H2/H3 receipt tests and strict response-body tests |
 
 DNSCrypt listeners remain supported. A DNSCrypt upstream with a custom dialer
 is explicitly rejected: its native client cannot use that connection owner.
 HyperCacheDNS does not expose DNSCrypt upstreams.
+Non-nil receipt state is also explicitly rejected for DNSCrypt upstreams: its
+client does not expose a complete-message boundary. DNSCrypt listeners and
+ordinary synchronous upstream exchanges remain supported.
+
+## Logical receipt and physical completion
+
+`ExchangeState` is constructed per invocation. `Done` and `Result` expose its
+immutable response, receipt and error independently of `Exchange` return.
+`Expire` seals admission of new candidates; an already observed complete
+candidate may finish only bounded local decoding and validation. `Abandon`
+discards a losing invocation immediately. Neither cancels or joins the native
+network operation; the application still owns tracking and draining its workers
+and physical resources. A later cleanup error is returned by `Exchange`, and
+does not replace an already accepted response.
+
+Receipt observation and expiry serialize on one short state lock. The clock is
+read there immediately after complete native read and before decoding. This is
+a software observation boundary, not a guarantee about physical packet arrival
+during arbitrary scheduler pauses. There is no hidden validation grace timer.
+Validation is bounded by DNS message size, not by a promise that a paused
+goroutine runs immediately at the wall-clock deadline. Tests cover both expiry
+before observation and completion of a reserved candidate after sealing.
+
+Wrong-ID UDP packets and truncated UDP replies cannot reserve a final answer.
+A rejected question releases its reservation before TCP continuation. A TCP
+reply supplies a new receipt; TCP failure or logical expiry cannot restore the
+provisional UDP result. Each state belongs to one call, including concurrent
+calls through shared TLS/HTTP/QUIC connections. Reusing a state is an error.
+
+The common plain/TLS reader uses miekg/dns `Conn.WriteMsg`, `ReadMsgHeader`,
+`Msg.Unpack` and native TSIG verification, with no duplicate application DNS
+framing stack. The small plain exchange boundary retains native EDNS receive
+size, UDP ID filtering and the inherited two-second I/O default when its native
+timeout is zero. DoT retains its separately documented zero-timeout behavior.
+Miekg/dns is BSD-3-Clause; its pinned module and license remain unchanged.
 
 Hooks start after DNS framing/decryption succeeds. TLS handshake failures,
 unreadable DNS headers and malformed HTTP/TCP framing remain transport errors.

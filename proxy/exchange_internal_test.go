@@ -51,10 +51,10 @@ type measuredUpstream struct {
 var _ upstream.Upstream = measuredUpstream{}
 
 // Exchange implements the [upstream.Upstream] interface for measuredUpstream.
-func (u measuredUpstream) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
+func (u measuredUpstream) Exchange(req *dns.Msg, state *upstream.ExchangeState) (resp *dns.Msg, err error) {
 	u.stats[u.Address()]++
 
-	return u.Upstream.Exchange(req)
+	return u.Upstream.Exchange(req, nil)
 }
 
 func TestProxy_Exchange_loadBalance(t *testing.T) {

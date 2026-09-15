@@ -110,7 +110,7 @@ type testUpstream struct {
 var _ Upstream = (*testUpstream)(nil)
 
 // Exchange implements the [Upstream] interface for *testUpstream.
-func (u *testUpstream) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
+func (u *testUpstream) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error) {
 	if u.sleep != 0 {
 		time.Sleep(u.sleep)
 	}

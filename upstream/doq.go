@@ -10,18 +10,15 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"os"
 	"runtime"
 	"sync"
 	"time"
 
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
-	"github.com/AdguardTeam/golibs/validate"
 	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 )
 
 const (
@@ -33,6 +30,11 @@ const (
 	// an internal error and is incapable of pursuing the transaction or the
 	// connection.
 	QUICCodeInternalError = quic.ApplicationErrorCode(1)
+
+	// QUICCodeProtocolError reports a malformed DoQ transaction (RFC 9250).
+	QUICCodeProtocolError = quic.ApplicationErrorCode(2)
+
+	errDoQProtocol errors.Error = "invalid DoQ response"
 
 	// QUICKeepAlivePeriod is the value that we pass to *quic.Config and that
 	// controls the period with with keep-alive frames are being sent to the
@@ -100,23 +102,6 @@ type dnsOverQUIC struct {
 	timeout time.Duration
 }
 
-// quicStream is the interface of QUIC stream used by readMsg to simplify
-// testing.
-//
-// Note, that this interface is implemented by [*quic.Stream].
-type quicStream interface {
-	// Read reads data from the stream.  If the stream was canceled, the error
-	// is a [quic.StreamError].
-	Read(p []byte) (n int, err error)
-
-	// CancelRead aborts receiving on this stream.  See
-	// [quic.ReceiveStream.CancelRead] for more details.
-	CancelRead(code quic.StreamErrorCode)
-}
-
-// type check
-var _ quicStream = (*quic.Stream)(nil)
-
 // newDoQ returns the DNS-over-QUIC Upstream.
 func newDoQ(addr *url.URL, opts *Options) (u Upstream, err error) {
 	addPort(addr, defaultPortDoQ)
@@ -170,17 +155,21 @@ var _ Upstream = (*dnsOverQUIC)(nil)
 func (p *dnsOverQUIC) Address() string { return p.addr.String() }
 
 // Exchange implements the [Upstream] interface for *dnsOverQUIC.
-func (p *dnsOverQUIC) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
+func (p *dnsOverQUIC) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error) {
+	if err = state.start(req.Id); err != nil {
+		return nil, err
+	}
+	defer func() { state.finish(err) }()
 	// When sending queries over a QUIC connection, the DNS Message ID MUST be
 	// set to 0.  The stream mapping for DoQ allows for unambiguous correlation
 	// of queries and responses, so the Message ID field is not required.
 	//
 	// See https://www.rfc-editor.org/rfc/rfc9250#section-4.2.1.
 	id := req.Id
+	req = req.Copy()
 	req.Id = 0
 	defer func() {
-		// Restore the original ID to not break compatibility with proxies.
-		req.Id = id
+		// Correlate the returned response with the caller's unmodified request.
 		if resp != nil {
 			resp.Id = id
 		}
@@ -193,12 +182,12 @@ func (p *dnsOverQUIC) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
 	}
 
 	// Make the first attempt to send the DNS query.
-	resp, err = p.exchangeQUIC(req, conn)
+	resp, err = p.exchangeQUIC(req, conn, state)
 
 	// Failure to use a cached connection should be handled gracefully as this
 	// connection could have been closed by the server or simply be broken due
 	// to how UDP NAT works.  In this case the connection should be re-created.
-	if cached && err != nil {
+	if cached && err != nil && !errors.Is(err, errDoQProtocol) && !isExchangeTimeout(err) {
 		p.logger.Debug("recreating the quic connection and retrying", slogutil.KeyError, err)
 
 		// Close the active connection to make sure the cached connection is
@@ -213,7 +202,7 @@ func (p *dnsOverQUIC) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
 		}
 
 		// Retry sending the request through the new connection.
-		resp, err = p.exchangeQUIC(req, conn)
+		resp, err = p.exchangeQUIC(req, conn, state)
 	}
 
 	if err != nil {
@@ -241,7 +230,7 @@ func (p *dnsOverQUIC) Close() (err error) {
 
 // exchangeQUIC attempts to open a new QUIC stream, send the DNS message
 // through it and return the response it got from the server.
-func (p *dnsOverQUIC) exchangeQUIC(req *dns.Msg, conn *quic.Conn) (resp *dns.Msg, err error) {
+func (p *dnsOverQUIC) exchangeQUIC(req *dns.Msg, conn *quic.Conn, state *ExchangeState) (resp *dns.Msg, err error) {
 	addr := p.Address()
 
 	logBegin(p.logger, addr, networkUDP, req)
@@ -256,6 +245,10 @@ func (p *dnsOverQUIC) exchangeQUIC(req *dns.Msg, conn *quic.Conn) (resp *dns.Msg
 	if err != nil {
 		return nil, fmt.Errorf("opening stream: %w", err)
 	}
+	// RFC 9250 section 4.3: DOQ_REQUEST_CANCELLED.  Completed stream
+	// directions ignore cancellation; failed reads release their resources.
+	defer stream.CancelRead(quic.StreamErrorCode(0x3))
+	defer stream.CancelWrite(quic.StreamErrorCode(0x3))
 
 	if p.timeout > 0 {
 		err = stream.SetDeadline(time.Now().Add(p.timeout))
@@ -278,7 +271,7 @@ func (p *dnsOverQUIC) exchangeQUIC(req *dns.Msg, conn *quic.Conn) (resp *dns.Msg
 		p.logger.Debug("closing quic stream", slogutil.KeyError, err)
 	}
 
-	return p.readMsg(stream)
+	return p.readMsg(stream, req, state)
 }
 
 // getBytesPool returns (creates if needed) a pool we store byte buffers in.
@@ -404,6 +397,9 @@ func (p *dnsOverQUIC) closeConnWithError(conn *quic.Conn, err error) {
 	if err != nil {
 		code = QUICCodeInternalError
 	}
+	if errors.Is(err, errDoQProtocol) {
+		code = QUICCodeProtocolError
+	}
 
 	if errors.Is(err, quic.Err0RTTRejected) {
 		// Reset the TokenStore only if 0-RTT was rejected.
@@ -422,20 +418,21 @@ func (p *dnsOverQUIC) closeConnWithError(conn *quic.Conn, err error) {
 }
 
 // readMsg reads the incoming DNS message from the QUIC stream.
-func (p *dnsOverQUIC) readMsg(stream quicStream) (m *dns.Msg, err error) {
+func (p *dnsOverQUIC) readMsg(stream io.Reader, req *dns.Msg, state *ExchangeState) (m *dns.Msg, err error) {
 	defer func() { err = errors.Annotate(err, "from %s: %w", p.addr) }()
 
 	var lenBuf [2]byte
 	_, err = io.ReadFull(stream, lenBuf[:])
 	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("%w: reading response length: %w", errDoQProtocol, err)
+		}
 		return nil, fmt.Errorf("reading response length: %w", err)
 	}
 
 	msgLen := binary.BigEndian.Uint16(lenBuf[:])
-	err = validate.Positive("response length", msgLen)
-	if err != nil {
-		// Don't wrap the error, since it's informative enough as is.
-		return nil, err
+	if msgLen == 0 {
+		return nil, fmt.Errorf("%w: zero response length", errDoQProtocol)
 	}
 
 	pool := p.getBytesPool()
@@ -446,10 +443,28 @@ func (p *dnsOverQUIC) readMsg(stream quicStream) (m *dns.Msg, err error) {
 
 	_, err = io.ReadFull(stream, respBuf)
 	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("%w: reading response body: %w", errDoQProtocol, err)
+		}
 		return nil, err
 	}
 
-	stream.CancelRead(0)
+	// A DoQ response is exactly one frame followed by FIN.  Merely reading
+	// the declared frame cannot prove that the response is complete.
+	var extra [1]byte
+	n, err := stream.Read(extra[:])
+	if n != 0 {
+		return nil, fmt.Errorf("%w: extra data after frame", errDoQProtocol)
+	}
+	if !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("reading DoQ response FIN: %w", err)
+	}
+	ticket := state.reserve(respBuf, 0, false)
+	defer func() {
+		if err != nil {
+			state.reject(ticket)
+		}
+	}()
 
 	// All DNS messages (queries and responses) sent over DoQ connections MUST
 	// be encoded as a 2-octet length field followed by the message content as
@@ -457,8 +472,15 @@ func (p *dnsOverQUIC) readMsg(stream quicStream) (m *dns.Msg, err error) {
 	m = &dns.Msg{}
 	err = m.Unpack(respBuf)
 	if err != nil {
-		return nil, fmt.Errorf("from %s: unpacking response: %w", p.addr, err)
+		return nil, fmt.Errorf("%w: unpacking: %w", errDoQProtocol, err)
 	}
+	if m.Id != 0 {
+		return nil, fmt.Errorf("%w: %w", errDoQProtocol, dns.ErrId)
+	}
+	if err = validateResponse(req, m); err != nil {
+		return nil, fmt.Errorf("%w: %w", errDoQProtocol, err)
+	}
+	state.accept(ticket, m)
 
 	return m, nil
 }
@@ -471,69 +493,6 @@ func newQUICTokenStore() (s quic.TokenStore) {
 	// Setting maxOrigins to 1 and tokensPerOrigin to 10 assuming that this is
 	// more than enough for the way we use it (one connection per upstream).
 	return quic.NewLRUTokenStore(1, 10)
-}
-
-// isQUICRetryError checks the error and determines whether it may signal that
-// we should re-create the QUIC connection.  This requirement is caused by
-// quic-go issues, see the comments inside this function.
-// TODO(ameshkov): re-test when updating quic-go.
-func isQUICRetryError(err error) (ok bool) {
-	var qAppErr *quic.ApplicationError
-	if errors.As(err, &qAppErr) {
-		// Error code 0 is often returned when the server has been restarted,
-		// and we try to use the same connection on the client-side.
-		// http3.ErrCodeNoError may be used by an HTTP/3 server when closing
-		// an idle connection.  These connections are not immediately closed
-		// by the HTTP client so this case should be handled.
-		if qAppErr.ErrorCode == 0 ||
-			qAppErr.ErrorCode == quic.ApplicationErrorCode(http3.ErrCodeNoError) {
-			return true
-		}
-	}
-
-	var qIdleErr *quic.IdleTimeoutError
-	if errors.As(err, &qIdleErr) {
-		// This error means that the connection was closed due to being idle.
-		// In this case we should forcibly re-create the QUIC connection.
-		// Reproducing is rather simple, stop the server and wait for 30 seconds
-		// then try to send another request via the same upstream.
-		return true
-	}
-
-	var resetErr *quic.StatelessResetError
-	if errors.As(err, &resetErr) {
-		// A stateless reset is sent when a server receives a QUIC packet that
-		// it doesn't know how to decrypt.  For instance, it may happen when
-		// the server was recently rebooted.  We should reconnect and try again
-		// in this case.
-		return true
-	}
-
-	var qTransportError *quic.TransportError
-	if errors.As(err, &qTransportError) && qTransportError.ErrorCode == quic.NoError {
-		// A transport error with the NO_ERROR error code could be sent by the
-		// server when it considers that it's time to close the connection.
-		// For example, Google DNS eventually closes an active connection with
-		// the NO_ERROR code and "Connection max age expired" message:
-		// https://github.com/AdguardTeam/dnsproxy/issues/283
-		return true
-	}
-
-	if errors.Is(err, quic.Err0RTTRejected) {
-		// This error happens when we try to establish a 0-RTT connection with
-		// a token the server is no more aware of.  This can be reproduced by
-		// restarting the QUIC server (it will clear its tokens cache).  The
-		// next connection attempt will return this error until the client's
-		// tokens cache is purged.
-		return true
-	}
-
-	if errors.Is(err, os.ErrDeadlineExceeded) {
-		// A timeout that could happen when the server has been restarted.
-		return true
-	}
-
-	return false
 }
 
 func (p *dnsOverQUIC) withDeadline(

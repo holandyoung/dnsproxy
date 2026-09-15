@@ -98,7 +98,7 @@ func TestRequestPipelineAcrossEncryptedListeners(t *testing.T) {
 				u, parseErr := upstream.AddressToUpstream(tc.address, &upstream.Options{RootCAs: roots, ServerName: tlsServerName, Logger: testLogger, Timeout: time.Second, HTTPVersions: tc.versions})
 				require.NoError(t, parseErr)
 				defer u.Close()
-				exchange = u.Exchange
+				exchange = func(r *dns.Msg) (*dns.Msg, error) { return u.Exchange(r, nil) }
 			}
 			for _, qtype := range []uint16{dns.TypeA, dns.TypeANY} {
 				response, exchangeErr := exchange(new(dns.Msg).SetQuestion("pipeline.example.", qtype))

@@ -98,7 +98,11 @@ var _ Upstream = (*dnsOverTLS)(nil)
 func (p *dnsOverTLS) Address() string { return p.addr.String() }
 
 // Exchange implements the [Upstream] interface for *dnsOverTLS.
-func (p *dnsOverTLS) Exchange(req *dns.Msg) (reply *dns.Msg, err error) {
+func (p *dnsOverTLS) Exchange(req *dns.Msg, state *ExchangeState) (reply *dns.Msg, err error) {
+	if err = state.start(req.Id); err != nil {
+		return nil, err
+	}
+	defer func() { state.finish(err) }()
 	ctx := context.Background()
 	if p.timeout > 0 {
 		var cancel context.CancelFunc
@@ -111,18 +115,21 @@ func (p *dnsOverTLS) Exchange(req *dns.Msg) (reply *dns.Msg, err error) {
 		return nil, fmt.Errorf("getting conn to %s: %w", p.addr, err)
 	}
 
-	conn, err := p.conn(ctx, h)
+	conn, cached, err := p.conn(ctx, h)
 	if err != nil {
 		return nil, fmt.Errorf("getting conn to %s: %w", p.addr, err)
 	}
 
-	reply, err = p.exchangeWithConn(conn, req)
+	reply, err = p.exchangeWithConn(conn, req, state)
 	if err != nil {
 		// The pooled connection might have been closed already, see
 		// https://github.com/AdguardTeam/dnsproxy/issues/3.  The following
 		// connection from pool may also be malformed, so dial a new one.
 
 		err = errors.WithDeferred(err, conn.Close())
+		if !cached || errors.Is(err, errDNSProtocol) {
+			return nil, err
+		}
 		p.logger.Debug("dot got bad conn from pool", "addr", p.addr, slogutil.KeyError, err)
 		if ctx.Err() != nil {
 			return nil, errors.Join(err, ctx.Err())
@@ -143,7 +150,7 @@ func (p *dnsOverTLS) Exchange(req *dns.Msg) (reply *dns.Msg, err error) {
 			)
 		}
 
-		reply, err = p.exchangeWithConn(conn, req)
+		reply, err = p.exchangeWithConn(conn, req, state)
 		if err != nil {
 			return reply, errors.WithDeferred(err, conn.Close())
 		}
@@ -174,7 +181,7 @@ func (p *dnsOverTLS) Close() (err error) {
 
 // conn returns the first available connection from the pool if there is any, or
 // dials a new one otherwise.
-func (p *dnsOverTLS) conn(ctx context.Context, h bootstrap.DialHandler) (conn net.Conn, err error) {
+func (p *dnsOverTLS) conn(ctx context.Context, h bootstrap.DialHandler) (conn net.Conn, cached bool, err error) {
 	// Dial a new connection outside the lock, if needed.
 	defer func() {
 		if conn == nil {
@@ -188,7 +195,7 @@ func (p *dnsOverTLS) conn(ctx context.Context, h bootstrap.DialHandler) (conn ne
 
 	l := len(p.conns)
 	if l == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	p.conns, conn = p.conns[:l-1], p.conns[l-1]
@@ -201,12 +208,12 @@ func (p *dnsOverTLS) conn(ctx context.Context, h bootstrap.DialHandler) (conn ne
 		// If deadLine can't be updated it means that connection was already
 		// closed.
 		_ = conn.Close()
-		return nil, nil
+		return nil, false, nil
 	}
 
 	p.logger.Debug("dot upstream using existing conn", "raddr", conn.RemoteAddr())
 
-	return conn, nil
+	return conn, true, nil
 }
 
 func (p *dnsOverTLS) putBack(conn net.Conn) {
@@ -217,7 +224,7 @@ func (p *dnsOverTLS) putBack(conn net.Conn) {
 }
 
 // exchangeWithConn tries to exchange the query using conn.
-func (p *dnsOverTLS) exchangeWithConn(conn net.Conn, req *dns.Msg) (reply *dns.Msg, err error) {
+func (p *dnsOverTLS) exchangeWithConn(conn net.Conn, req *dns.Msg, state *ExchangeState) (reply *dns.Msg, err error) {
 	addr := p.Address()
 
 	logBegin(p.logger, addr, networkTCP, req)
@@ -230,11 +237,9 @@ func (p *dnsOverTLS) exchangeWithConn(conn net.Conn, req *dns.Msg) (reply *dns.M
 		return nil, fmt.Errorf("sending request to %s: %w", addr, err)
 	}
 
-	reply, err = dnsConn.ReadMsg()
+	reply, err = readDNSResponse(&dnsConn, req, state, false)
 	if err != nil {
 		return nil, fmt.Errorf("reading response from %s: %w", addr, err)
-	} else if reply.Id != req.Id {
-		return reply, dns.ErrId
 	}
 
 	return reply, err

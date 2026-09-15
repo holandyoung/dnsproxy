@@ -85,7 +85,7 @@ func TestNetworkDialerWrappedUDPHasDatagramFraming(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, u.Close()) })
 	query := createTestMessage()
 	query.Id = 0x4567
-	response, exchangeErr := u.Exchange(query)
+	response, exchangeErr := u.Exchange(query, nil)
 	conn := <-route.opened
 	want, err := query.Pack()
 	require.NoError(t, err)
@@ -134,7 +134,7 @@ func TestNetworkDialerHTTPVersionAllowlist(t *testing.T) {
 			defer u.Close()
 			for range 3 {
 				query := createTestMessage()
-				response, exchangeErr := u.Exchange(query)
+				response, exchangeErr := u.Exchange(query, nil)
 				if tc.wantReject {
 					require.Error(t, exchangeErr)
 					require.Nil(t, response)
@@ -195,7 +195,7 @@ func TestNetworkDialerDoTExchangeDeadline(t *testing.T) {
 				checkUpstream(t, u, "tls://127.0.0.1:1")
 			}
 			result := make(chan error, 1)
-			go func() { _, exchangeErr := u.Exchange(createTestMessage()); result <- exchangeErr }()
+			go func() { _, exchangeErr := u.Exchange(createTestMessage(), nil); result <- exchangeErr }()
 			if mode == "zero" {
 				select {
 				case err = <-result:
@@ -241,7 +241,7 @@ func TestNetworkDialerDoTHandshakeDeadline(t *testing.T) {
 	u, err := AddressToUpstream("tls://127.0.0.1:1", &Options{NetworkDialer: route, Timeout: 50 * time.Millisecond, Logger: testLogger})
 	require.NoError(t, err)
 	defer u.Close()
-	_, err = u.Exchange(createTestMessage())
+	_, err = u.Exchange(createTestMessage(), nil)
 	conn := <-accepted
 	require.NotNil(t, conn)
 	defer conn.Close()

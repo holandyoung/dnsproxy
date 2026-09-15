@@ -9,17 +9,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/httphdr"
-	"github.com/AdguardTeam/golibs/ioutil"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
 	"github.com/miekg/dns"
@@ -157,7 +158,11 @@ var _ Upstream = (*dnsOverHTTPS)(nil)
 func (p *dnsOverHTTPS) Address() string { return p.addrRedacted }
 
 // Exchange implements the [Upstream] interface for *dnsOverHTTPS.
-func (p *dnsOverHTTPS) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
+func (p *dnsOverHTTPS) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error) {
+	if err = state.start(req.Id); err != nil {
+		return nil, err
+	}
+	defer func() { state.finish(err) }()
 	// Check if there was already an active client before sending the request.
 	// We'll only attempt to re-connect if there was one.
 	client, isCached, err := p.getClient()
@@ -166,7 +171,7 @@ func (p *dnsOverHTTPS) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
 	}
 
 	// Make the first attempt to send the DNS query.
-	resp, err = p.exchangeHTTPS(client, req)
+	resp, err = p.exchangeHTTPS(client, req, state)
 
 	// Make up to 2 attempts to re-create the HTTP client and send the request
 	// again.  There are several cases (mostly, with QUIC) where this workaround
@@ -179,7 +184,7 @@ func (p *dnsOverHTTPS) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
 			return nil, fmt.Errorf("failed to reset http client: %w", err)
 		}
 
-		resp, err = p.exchangeHTTPS(client, req)
+		resp, err = p.exchangeHTTPS(client, req, state)
 	}
 
 	if err != nil {
@@ -220,7 +225,7 @@ func (p *dnsOverHTTPS) closeClient(client *http.Client) (err error) {
 
 // exchangeHTTPS logs the request and its result and calls exchangeHTTPSClient.
 // client and req must not be nil.
-func (p *dnsOverHTTPS) exchangeHTTPS(client *http.Client, req *dns.Msg) (resp *dns.Msg, err error) {
+func (p *dnsOverHTTPS) exchangeHTTPS(client *http.Client, req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error) {
 	n := networkTCP
 	if isHTTP3(client) {
 		n = networkUDP
@@ -241,23 +246,9 @@ func (p *dnsOverHTTPS) exchangeHTTPS(client *http.Client, req *dns.Msg) (resp *d
 	// See https://www.rfc-editor.org/rfc/rfc8484.html.
 	binary.BigEndian.PutUint16(buf, 0)
 
-	resp, err = p.exchangeHTTPSClient(client, buf)
+	resp, err = p.exchangeHTTPSClient(client, req, buf, state)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging: %w", err)
-	}
-
-	if resp.Id != 0 {
-		return nil, fmt.Errorf("unexpected non-zero id in response: %d", resp.Id)
-	}
-
-	// Restore the original request ID, since it was set to 0.
-	//
-	// See https://www.rfc-editor.org/rfc/rfc8484.html.
-	resp.Id = req.Id
-
-	err = validateResponse(req, resp)
-	if err != nil {
-		return nil, fmt.Errorf("validating response: %w", err)
 	}
 
 	return resp, nil
@@ -268,7 +259,9 @@ func (p *dnsOverHTTPS) exchangeHTTPS(client *http.Client, req *dns.Msg) (resp *d
 // resolver.  client must not be nil.
 func (p *dnsOverHTTPS) exchangeHTTPSClient(
 	client *http.Client,
+	req *dns.Msg,
 	buf []byte,
+	state *ExchangeState,
 ) (resp *dns.Msg, err error) {
 	// It appears, that GET requests are more memory-efficient with Golang
 	// implementation of HTTP/2.
@@ -306,12 +299,6 @@ func (p *dnsOverHTTPS) exchangeHTTPSClient(
 	}
 	defer slogutil.CloseAndLog(httpReq.Context(), p.logger, httpResp.Body, slog.LevelDebug)
 
-	limitBody := ioutil.LimitReader(httpResp.Body, dns.MaxMsgSize)
-	body, err := io.ReadAll(limitBody)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", p.addrRedacted, err)
-	}
-
 	if httpResp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf(
 			"expected status %d, got %d from %s",
@@ -320,6 +307,26 @@ func (p *dnsOverHTTPS) exchangeHTTPSClient(
 			p.addrRedacted,
 		)
 	}
+	media, _, mediaErr := mime.ParseMediaType(httpResp.Header.Get(httphdr.ContentType))
+	if mediaErr != nil || !strings.EqualFold(media, "application/dns-message") {
+		return nil, fmt.Errorf("invalid DNS response content type from %s", p.addrRedacted)
+	}
+	if httpResp.ContentLength > dns.MaxMsgSize {
+		return nil, fmt.Errorf("DNS response body too large from %s", p.addrRedacted)
+	}
+	body, err := io.ReadAll(io.LimitReader(httpResp.Body, dns.MaxMsgSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", p.addrRedacted, err)
+	}
+	if len(body) == 0 || len(body) > dns.MaxMsgSize {
+		return nil, fmt.Errorf("invalid DNS response body length from %s", p.addrRedacted)
+	}
+	ticket := state.reserve(body, 0, false)
+	defer func() {
+		if err != nil {
+			state.reject(ticket)
+		}
+	}()
 
 	resp = &dns.Msg{}
 	err = resp.Unpack(body)
@@ -331,6 +338,14 @@ func (p *dnsOverHTTPS) exchangeHTTPSClient(
 			err,
 		)
 	}
+	if resp.Id != 0 {
+		return nil, fmt.Errorf("unexpected non-zero id in response: %d", resp.Id)
+	}
+	resp.Id = req.Id
+	if err = validateResponse(req, resp); err != nil {
+		return nil, fmt.Errorf("validating response: %w", err)
+	}
+	state.accept(ticket, resp)
 
 	return resp, nil
 }
@@ -342,17 +357,48 @@ func (p *dnsOverHTTPS) shouldRetry(err error) (ok bool) {
 		return false
 	}
 
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		// If this is a timeout error, trying to forcibly re-create the HTTP
-		// client instance.  This is an attempt to fix an issue with DoH client
-		// stalling after a network change.
-		//
-		// See https://github.com/AdguardTeam/AdGuardHome/issues/3217.
+	if isExchangeTimeout(err) {
+		return false
+	}
+
+	var qAppErr *quic.ApplicationError
+	if errors.As(err, &qAppErr) {
+		// Error code 0 is often returned when the server has been restarted,
+		// and we try to use the same connection on the client-side.
+		// http3.ErrCodeNoError may be used by an HTTP/3 server when closing
+		// an idle connection.  These connections are not immediately closed
+		// by the HTTP client so this case should be handled.
+		if qAppErr.ErrorCode == 0 ||
+			qAppErr.ErrorCode == quic.ApplicationErrorCode(http3.ErrCodeNoError) {
+			return true
+		}
+	}
+
+	var resetErr *quic.StatelessResetError
+	if errors.As(err, &resetErr) {
+		// A stateless reset is sent when a server receives a QUIC packet that
+		// it doesn't know how to decrypt.  For instance, it may happen when
+		// the server was recently rebooted.  We should reconnect and try again
+		// in this case.
 		return true
 	}
 
-	if isQUICRetryError(err) {
+	var qTransportError *quic.TransportError
+	if errors.As(err, &qTransportError) && qTransportError.ErrorCode == quic.NoError {
+		// A transport error with the NO_ERROR error code could be sent by the
+		// server when it considers that it's time to close the connection.
+		// For example, Google DNS eventually closes an active connection with
+		// the NO_ERROR code and "Connection max age expired" message:
+		// https://github.com/AdguardTeam/dnsproxy/issues/283
+		return true
+	}
+
+	if errors.Is(err, quic.Err0RTTRejected) {
+		// This error happens when we try to establish a 0-RTT connection with
+		// a token the server is no more aware of.  This can be reproduced by
+		// restarting the QUIC server (it will clear its tokens cache).  The
+		// next connection attempt will return this error until the client's
+		// tokens cache is purged.
 		return true
 	}
 
@@ -441,6 +487,9 @@ func (p *dnsOverHTTPS) createClient() (*http.Client, error) {
 
 	client := &http.Client{
 		Transport: transport,
+		// A redirect is a non-200 DNS response, not permission to send the
+		// query to another endpoint. Apply this to every HTTP transport.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		// TODO(ameshkov):  p.timeout may appear zero that will disable the
 		// timeout for client, consider using the default.
 		Timeout: p.timeout,

@@ -35,8 +35,12 @@ type Upstream interface {
 	// been received or an error if something went wrong.  The implementations
 	// must not modify req as well as the caller must not modify it until the
 	// method returns.  It shouldn't be called after closing.  req must not be
-	// nil.
-	Exchange(req *dns.Msg) (resp *dns.Msg, err error)
+	// nil.  state is invocation-local; nil requests only the synchronous
+	// result.  A non-nil state publishes complete-message receipt before
+	// physical cleanup and permits logical expiration without cancellation.
+	// DNSCrypt upstreams reject non-nil state because their native client does
+	// not expose that read boundary.  A state must never be reused.
+	Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error)
 
 	// Address returns the human-readable address of the upstream DNS resolver.
 	// It may differ from what was passed to [AddressToUpstream].

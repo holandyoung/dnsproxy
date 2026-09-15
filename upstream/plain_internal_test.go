@@ -58,7 +58,7 @@ func TestUpstream_plainDNS_badID(t *testing.T) {
 	require.NoError(t, err)
 	testutil.CleanupAndRequireSuccess(t, u.Close)
 
-	resp, err := u.Exchange(req)
+	resp, err := u.Exchange(req, nil)
 
 	var netErr net.Error
 	require.ErrorAs(t, err, &netErr)
@@ -133,7 +133,7 @@ func TestUpstream_plainDNS_fallbackToTCP(t *testing.T) {
 			require.NoError(t, err)
 			testutil.CleanupAndRequireSuccess(t, u.Close)
 
-			resp, err := u.Exchange(req)
+			resp, err := u.Exchange(req, nil)
 			require.NoError(t, err)
 			requireResponse(t, req, resp)
 
