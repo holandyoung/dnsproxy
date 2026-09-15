@@ -82,7 +82,9 @@ func (m *middleware) limiterForIP(ip string) (rl any) {
 
 // isRatelimited checks if the specified address should be rate limited.
 func (m *middleware) isRatelimited(addr netip.Addr) (ok bool) {
-	addr = addr.Unmap()
+	// Zones select a local interface, not a different client network. Keep the
+	// original DNSContext address intact so replies still use that interface.
+	addr = addr.WithZone("").Unmap()
 	if m.allowlistAddrs.Contains(addr) {
 		return false
 	}
