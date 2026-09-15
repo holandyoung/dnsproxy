@@ -1,6 +1,15 @@
 package upstream
 
-import "github.com/miekg/dns"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/miekg/dns"
+)
+
+// A complete DNS frame rejected by the codec or protocol is not a failed
+// connection. Retrying it could turn the rejected answer into success.
+var errDNSProtocol = errors.New("invalid DNS response")
 
 // readDNSResponse uses the native DNS connection's datagram/stream framing and
 // exposes the complete-frame boundary before Unpack.  These upstreams do not
@@ -10,6 +19,9 @@ func readDNSResponse(conn *dns.Conn, req *dns.Msg, state *ExchangeState, udp boo
 	for {
 		wire, err := conn.ReadMsgHeader(nil)
 		if err != nil {
+			if errors.Is(err, dns.ErrShortRead) {
+				return nil, fmt.Errorf("%w: %w", errDNSProtocol, err)
+			}
 			return nil, err
 		}
 		ticket := state.reserve(wire, req.Id, udp)
@@ -20,18 +32,18 @@ func readDNSResponse(conn *dns.Conn, req *dns.Msg, state *ExchangeState, udp boo
 		}
 		if err != nil {
 			state.reject(ticket)
-			return response, err
+			return response, fmt.Errorf("%w: %w", errDNSProtocol, err)
 		}
 		if response.Id != req.Id {
 			state.reject(ticket)
 			if udp {
 				continue
 			}
-			return response, dns.ErrId
+			return response, fmt.Errorf("%w: %w", errDNSProtocol, dns.ErrId)
 		}
 		if err = validateResponse(req, response); err != nil {
 			state.reject(ticket)
-			return response, err
+			return response, fmt.Errorf("%w: %w", errDNSProtocol, err)
 		}
 		state.accept(ticket, response)
 		return response, nil

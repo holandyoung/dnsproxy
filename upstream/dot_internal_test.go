@@ -168,8 +168,9 @@ func TestUpstream_dnsOverTLS_poolDeadline(t *testing.T) {
 	dialHandler, err := p.getDialer()
 	require.NoError(t, err)
 
-	usedConn, err := p.conn(context.Background(), dialHandler)
+	usedConn, cached, err := p.conn(context.Background(), dialHandler)
 	require.NoError(t, err)
+	require.True(t, cached)
 	require.Same(t, usedConn, conn)
 
 	response, err = p.exchangeWithConn(conn, req, nil)
@@ -186,8 +187,9 @@ func TestUpstream_dnsOverTLS_poolDeadline(t *testing.T) {
 	require.Len(t, p.conns, 1)
 	conn = p.conns[0]
 
-	usedConn, err = p.conn(context.Background(), dialHandler)
+	usedConn, cached, err = p.conn(context.Background(), dialHandler)
 	require.NoError(t, err)
+	require.True(t, cached)
 	require.Same(t, usedConn, conn)
 
 	response, err = p.exchangeWithConn(usedConn, req, nil)

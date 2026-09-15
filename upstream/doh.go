@@ -456,6 +456,9 @@ func (p *dnsOverHTTPS) createClient() (*http.Client, error) {
 
 	client := &http.Client{
 		Transport: transport,
+		// A redirect is a non-200 DNS response, not permission to send the
+		// query to another endpoint. Apply this to every HTTP transport.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		// TODO(ameshkov):  p.timeout may appear zero that will disable the
 		// timeout for client, consider using the default.
 		Timeout: p.timeout,

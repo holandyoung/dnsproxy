@@ -7,6 +7,17 @@ fork revision directly; it does not replace the upstream module at build time.
 
 ## Required semantics and deviations
 
+Complete protocol rejections never authorize a hidden query replay. Native
+DoT/DoQ reconnect only for connection failures on a retained connection; DNS
+codec/question/ID errors and DoQ invalid framing/FIN are final. DoH clients
+reject redirects before visiting the destination on H1, H2 and H3. These
+deviations preserve HyperCacheDNS's established rejection policy. Evidence:
+`TestReceiptDoQCachedRejectionDoesNotReplay`,
+`TestReceiptDoTCachedRejectionDoesNotReplay`, and
+`TestReceiptDoHRedirectDoesNotReplay` warm actual connections before the bad
+response and count application queries; real connection-failure controls still
+recover. TCP and encrypted-protocol TC policy remains an application decision.
+
 | Boundary | Reason for the change | Evidence |
 | --- | --- | --- |
 | `upstream.Options.NetworkDialer` | The application owns bootstrap, routes, SOCKS associations and physical shutdown. Native QUIC discarded a UDP connection and redialed directly, bypassing packet wrappers. One `dialQUIC` now covers DoQ, HTTP/3 and probes with the actual `net.PacketConn`. Routing errors never authorize another route. | `TestNetworkDialerDoQOwnsActualPacketConnection`, `TestNetworkDialerHTTP3CoversPreferenceProbeAndActualConnection` |
