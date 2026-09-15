@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/testutil"
+	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

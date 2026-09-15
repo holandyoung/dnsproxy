@@ -9,10 +9,10 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/AdguardTeam/golibs/contextutil"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/netutil"
+	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/holandyoung/dnsproxy/upstream"
 )
 

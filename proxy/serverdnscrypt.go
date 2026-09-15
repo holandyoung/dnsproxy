@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/syncutil"
+	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/miekg/dns"
 )
 

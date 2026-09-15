@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/osutil"
+	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/holandyoung/dnsproxy/internal/dnsmsg"
 	"github.com/holandyoung/dnsproxy/internal/middleware"
 	proxynetutil "github.com/holandyoung/dnsproxy/internal/netutil"
