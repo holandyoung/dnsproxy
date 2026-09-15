@@ -59,7 +59,17 @@ func (w *tcpResponseWriter) WriteMsg(ctx context.Context, m *dns.Msg) (err error
 		return fmt.Errorf("encrypting query: %w", err)
 	}
 
-	return writePrefixed(res, w.tcpConn)
+	return writeTCPResponse(res, w.tcpConn)
+}
+
+// writeTCPResponse bounds only the server's physical write. Query execution
+// time belongs to the handler and must not consume this I/O deadline. Client
+// exchanges retain their own context deadline in writePrefixed.
+func writeTCPResponse(message []byte, conn net.Conn) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(defaultReadTimeout)); err != nil {
+		return err
+	}
+	return writePrefixed(message, conn)
 }
 
 // serveTCP listens for TCP connections and handles them.  It blocks the calling
@@ -168,7 +178,7 @@ func (s *Server) handleTCPMsg(
 			return fmt.Errorf("failed to process a plain DNS query: %w", err)
 		}
 
-		err = writePrefixed(reply, conn)
+		err = writeTCPResponse(reply, conn)
 		if err != nil {
 			return fmt.Errorf("failed to write a response: %w", err)
 		}
@@ -215,8 +225,6 @@ func (s *Server) handleTCPConnection(
 			return fmt.Errorf("reading dns message from connection: %w", err)
 		}
 
-		// Bound both the public certificate handshake and encrypted replies.
-		_ = conn.SetWriteDeadline(time.Now().Add(defaultReadTimeout))
 		err = s.handleTCPMsg(ctx, b, conn, certTxt)
 		if err != nil {
 			s.logger.DebugContext(ctx, "failed to process a DNS query", slogutil.KeyError, err)

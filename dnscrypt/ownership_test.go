@@ -10,6 +10,8 @@ import (
 	"net/netip"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -185,4 +187,97 @@ func TestServer_ImmediateShutdownAndRestart(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestServer_WriteBudgetBeginsAfterHandler(t *testing.T) {
+	for _, proto := range []dnscrypt.Proto{dnscrypt.ProtoUDP, dnscrypt.ProtoTCP} {
+		t.Run(string(proto), func(t *testing.T) {
+			for _, delay := range []time.Duration{0, 2100 * time.Millisecond} {
+				t.Run(delay.String(), func(t *testing.T) {
+					handler := dnscrypt.HandlerFunc(func(ctx context.Context, rw dnscrypt.ResponseWriter, r *dns.Msg) error {
+						select {
+						case <-time.After(delay):
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+						return testHandler(ctx, rw, r)
+					})
+					s, key, _ := newTestServer(t, handler, proto)
+					client := newTestClient(&dnscrypt.ClientConfig{Proto: proto})
+					stamp := newTestServerStamp(s, key)
+					ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+					defer cancel()
+					info, e := client.DialStampContext(ctx, *stamp)
+					require.NoError(t, e)
+					before := time.Now()
+					reply, e := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info)
+					t.Logf("proto=%s processing=%s elapsed=%s err=%v", proto, delay, time.Since(before), e)
+					require.NoError(t, e, "successful handler processing must not consume the actual socket write deadline")
+					require.Len(t, reply.Answer, 1)
+				})
+			}
+		})
+	}
+}
+
+func TestServer_RestartWaitsForAdmittedHandler(t *testing.T) {
+	entered := make(chan context.Context, 1)
+	release := make(chan struct{})
+	var released sync.Once
+	defer released.Do(func() { close(release) })
+	var calls atomic.Int32
+	handler := dnscrypt.HandlerFunc(func(ctx context.Context, rw dnscrypt.ResponseWriter, r *dns.Msg) error {
+		if calls.Add(1) == 1 {
+			entered <- ctx
+			<-release
+		}
+		return testHandler(ctx, rw, r)
+	})
+	srv, key, _ := newTestServer(t, handler, dnscrypt.ProtoTCP)
+	client := newTestClient(&dnscrypt.ClientConfig{Proto: dnscrypt.ProtoTCP})
+	stamp := newTestServerStamp(srv, key)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	info, e := client.DialStampContext(ctx, *stamp)
+	require.NoError(t, e)
+	c, e := net.Dial("tcp", srv.LocalAddr().String())
+	require.NoError(t, e)
+	defer c.Close()
+	clientDone := make(chan error, 1)
+	go func() {
+		_, e := client.ExchangeConnContext(ctx, c, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info)
+		clientDone <- e
+	}()
+	var handlerCtx context.Context
+	select {
+	case handlerCtx = <-entered:
+	case <-ctx.Done():
+		t.Fatal("handler did not admit real encrypted query")
+	}
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	_ = srv.Shutdown(stopped)
+	select {
+	case <-handlerCtx.Done():
+	case <-ctx.Done():
+		t.Fatal("Shutdown did not cancel admitted handler")
+	}
+	require.Error(t, srv.Start(t.Context()), "previous held run must prevent restart")
+	select {
+	case e := <-clientDone:
+		require.Error(t, e)
+	case <-time.After(time.Second):
+		t.Fatal("accepted client was not physically closed while handler remained held")
+	}
+	released.Do(func() { close(release) })
+	join, done := context.WithTimeout(t.Context(), time.Second)
+	defer done()
+	require.NoError(t, srv.Shutdown(join))
+	require.NoError(t, srv.Start(t.Context()))
+	stamp = newTestServerStamp(srv, key)
+	info, e = client.DialStampContext(ctx, *stamp)
+	require.NoError(t, e)
+	answer, e := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info)
+	require.NoError(t, e)
+	require.Len(t, answer.Answer, 1)
 }
