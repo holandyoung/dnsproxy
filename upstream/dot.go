@@ -237,7 +237,7 @@ func (p *dnsOverTLS) exchangeWithConn(conn net.Conn, req *dns.Msg, state *Exchan
 		return nil, fmt.Errorf("sending request to %s: %w", addr, err)
 	}
 
-	reply, err = readDNSResponse(&dnsConn, req, state, false)
+	reply, err = readDNSResponse(&dnsConn, req, state, false, true)
 	if err != nil {
 		return nil, fmt.Errorf("reading response from %s: %w", addr, err)
 	}

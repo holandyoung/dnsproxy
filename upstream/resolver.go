@@ -60,6 +60,9 @@ func NewUpstreamResolver(resolverAddress string, opts *Options) (r *UpstreamReso
 
 		return nil, err
 	}
+	if plain, ok := ups.(*plainDNS); ok {
+		plain.bootstrap = true
+	}
 
 	return &UpstreamResolver{Upstream: ups}, validateBootstrap(ups)
 }
@@ -126,6 +129,9 @@ func (r *UpstreamResolver) LookupNetIP(
 	network bootstrap.Network,
 	host string,
 ) (ips []netip.Addr, err error) {
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
 	if host == "" {
 		return nil, nil
 	}
@@ -224,6 +230,12 @@ func (r *UpstreamResolver) request(host string, n bootstrap.Network) (res *ipRes
 	if err != nil {
 		return res, err
 	}
+	// Preserve bootstrap policy before dropping the DNS metadata. The
+	// application cannot validate these properties from []netip.Addr alone.
+	if resp == nil || !resp.Response || resp.Id != req.Id || resp.Opcode != req.Opcode ||
+		len(resp.Question) != 1 || resp.Question[0] != req.Question[0] || resp.Rcode != dns.RcodeSuccess {
+		return nil, errors.Error("invalid bootstrap DNS response")
+	}
 
 	res = &ipResult{
 		expire: time.Now(),
@@ -232,6 +244,9 @@ func (r *UpstreamResolver) request(host string, n bootstrap.Network) (res *ipRes
 	var minTTL uint32 = math.MaxUint32
 
 	for _, rr := range resp.Answer {
+		if rr.Header().Rrtype != qtype {
+			continue
+		}
 		ip := proxyutil.IPFromRR(rr)
 		if !ip.IsValid() {
 			continue

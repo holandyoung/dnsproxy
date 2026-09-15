@@ -24,7 +24,7 @@ func isExchangeTimeout(err error) bool {
 // exposes the complete-frame boundary before Unpack.  These upstreams do not
 // configure TSIG keys: native WriteMsg rejects signed requests, and unsolicited
 // signed replies retain the native missing-secret error.
-func readDNSResponse(conn *dns.Conn, req *dns.Msg, state *ExchangeState, udp bool) (*dns.Msg, error) {
+func readDNSResponse(conn *dns.Conn, req *dns.Msg, state *ExchangeState, udp, checkQuestion bool) (*dns.Msg, error) {
 	for {
 		wire, err := conn.ReadMsgHeader(nil)
 		if err != nil {
@@ -50,9 +50,11 @@ func readDNSResponse(conn *dns.Conn, req *dns.Msg, state *ExchangeState, udp boo
 			}
 			return response, fmt.Errorf("%w: %w", errDNSProtocol, dns.ErrId)
 		}
-		if err = validateResponse(req, response); err != nil {
-			state.reject(ticket)
-			return response, fmt.Errorf("%w: %w", errDNSProtocol, err)
+		if checkQuestion {
+			if err = validateResponse(req, response); err != nil {
+				state.reject(ticket)
+				return response, fmt.Errorf("%w: %w", errDNSProtocol, err)
+			}
 		}
 		state.accept(ticket, response)
 		return response, nil
