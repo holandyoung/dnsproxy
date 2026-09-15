@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/AdguardTeam/dnscrypt"
-	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/AdguardTeam/golibs/contextutil"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/netutil"
+	"github.com/holandyoung/dnsproxy/upstream"
 )
 
 // LogPrefix is a prefix for logging.
@@ -64,6 +64,18 @@ type Config struct {
 	// instead of DefaultHandler if set.  In case of [ErrDrop] error returned
 	// from this handler, the proxy will not send any response to the client.
 	RequestHandler Handler
+
+	// RequestMiddleware wraps the whole parsed-DNS request pipeline, including
+	// native validation, early replies, response preparation, and socket writes.
+	// It may attach context values, set Res and call next for an early reply, or
+	// return ErrDrop. The returned Handler must not be nil.
+	RequestMiddleware func(next Handler) Handler
+
+	// ResponseHandler prepares the final DNS message immediately before writing
+	// it. It runs for native validation replies as well as custom answers. It may
+	// modify Res or return ErrDrop. RequestMiddleware observes the final outcome.
+	// Res may be nil when the request handler failed without constructing a reply.
+	ResponseHandler Handler
 
 	// UpstreamConfig is a general set of DNS servers to forward requests to.
 	UpstreamConfig *UpstreamConfig
@@ -278,9 +290,11 @@ type HTTPConfig struct {
 //
 // TODO(s.chzhen):  Use [validate.Interface] from golibs.
 func (p *Proxy) validateConfig(c *Config) (err error) {
-	err = c.UpstreamConfig.validate()
-	if err != nil {
-		return fmt.Errorf("general upstreams: %w", err)
+	if c.RequestHandler == nil || c.UpstreamConfig != nil {
+		err = c.UpstreamConfig.validate()
+		if err != nil {
+			return fmt.Errorf("general upstreams: %w", err)
+		}
 	}
 
 	err = ValidatePrivateConfig(c.PrivateRDNSUpstreamConfig, c.PrivateSubnets)

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/proxyutil"
 	"github.com/AdguardTeam/golibs/syncutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
+	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
@@ -34,7 +34,7 @@ func TestProxy_quic(t *testing.T) {
 		Logger:         testLogger,
 		QUICListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
 		TLSConfig:      serverConfig,
-		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t)),
 		TrustedProxies: defaultTrustedProxies,
 	}
 
@@ -62,7 +62,7 @@ func TestProxy_quic(t *testing.T) {
 	require.False(t, t.Failed())
 
 	conf.QUICListenAddr = []*net.UDPAddr{addr}
-	conf.UpstreamConfig = newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr)
+	conf.UpstreamConfig = newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t))
 
 	t.Run("rerun", func(t *testing.T) {
 		dnsProxy := mustNew(t, conf)
@@ -94,7 +94,7 @@ func TestProxy_quicLargePackets(t *testing.T) {
 	serverConfig, caPem := newTLSConfig(t)
 	dnsProxy := mustNew(t, &Config{
 		Logger:         testLogger,
-		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t)),
 		TrustedProxies: defaultTrustedProxies,
 		RequestHandler: reqHandler,
 		TLSConfig:      serverConfig,
@@ -144,7 +144,7 @@ func TestProxy_quicTruncatedRequest(t *testing.T) {
 		Logger:         testLogger,
 		QUICListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
 		TLSConfig:      serverConfig,
-		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t)),
 		TrustedProxies: defaultTrustedProxies,
 		RequestHandler: &testHandler{
 			OnHandle: func(ctx context.Context, p *Proxy, d *DNSContext) (_ error) {

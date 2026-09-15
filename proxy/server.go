@@ -62,11 +62,13 @@ func (p *Proxy) serveListeners(ctx context.Context) {
 	}
 
 	for _, l := range p.httpsListen {
-		go func(l net.Listener) { _ = p.httpsServer.Serve(l) }(l)
+		srv := p.httpsServer
+		go func(l net.Listener) { _ = srv.Serve(l) }(l)
 	}
 
 	for _, l := range p.h3Listen {
-		go func(l *quic.EarlyListener) { _ = p.h3Server.ServeListener(l) }(l)
+		srv := p.h3Server
+		go func(l *quic.EarlyListener) { _ = srv.ServeListener(l) }(l)
 	}
 
 	for _, l := range p.quicListen {
@@ -74,32 +76,49 @@ func (p *Proxy) serveListeners(ctx context.Context) {
 	}
 }
 
-// handleDNSRequest processes the context.  The only error it returns is the one
-// from the [Handler].
+// handleDNSRequest runs the complete pipeline and normalizes intentional drops
+// for the protocol loops. Middleware observes drops before this normalization.
 func (p *Proxy) handleDNSRequest(ctx context.Context, d *DNSContext) (err error) {
+	err = p.requestPipeline.ServeDNS(ctx, p, d)
+	if errors.Is(err, ErrDrop) {
+		return nil
+	}
+	return err
+}
+
+func (p *Proxy) processDNSRequest(ctx context.Context, d *DNSContext) (err error) {
 	p.logDNSMessage(ctx, d.Req)
 
 	if d.Req.Response {
 		p.logger.DebugContext(ctx, "dropping incoming response packet", "addr", d.Addr)
 
-		return nil
+		return ErrDrop
 	}
 
 	ip := d.Addr.Addr()
 	d.IsPrivateClient = p.privateNets.Contains(ip)
 
 	// TODO(d.kolyshev):  Consider moving validation to a new middleware.
-	d.Res = p.validateRequest(d)
+	if d.Res == nil {
+		d.Res = p.validateRequest(d)
+	}
 	if d.Res == nil {
 		err = p.requestHandler.ServeDNS(ctx, p, d)
 		if errors.Is(err, ErrDrop) {
 			// Don't reply to dropped clients.
-			return nil
+			return ErrDrop
 		}
+	}
+	if p.responseHandler != nil {
+		prepareErr := p.responseHandler.ServeDNS(ctx, p, d)
+		if errors.Is(prepareErr, ErrDrop) {
+			return ErrDrop
+		}
+		err = errors.Join(err, prepareErr)
 	}
 
 	p.logDNSMessage(ctx, d.Res)
-	p.respond(ctx, d)
+	err = errors.Join(err, p.respond(ctx, d))
 
 	return err
 }
@@ -137,7 +156,7 @@ func (dctx *DNSContext) isForbiddenARPA(privateNets netutil.SubnetSet, l *slog.L
 }
 
 // respond writes the specified response to the client (or does nothing if d.Res is empty)
-func (p *Proxy) respond(ctx context.Context, d *DNSContext) {
+func (p *Proxy) respond(ctx context.Context, d *DNSContext) error {
 	// d.Conn can be nil in the case of a DoH request.
 	if d.Conn != nil {
 		_ = d.Conn.SetWriteDeadline(p.time.Now().Add(defaultTimeout))
@@ -165,6 +184,7 @@ func (p *Proxy) respond(ctx context.Context, d *DNSContext) {
 	if err != nil {
 		logWithNonCrit(ctx, err, "responding request", d.Proto, p.logger)
 	}
+	return err
 }
 
 // setMinMaxTTL sets the TTL values of all records according to the proxy

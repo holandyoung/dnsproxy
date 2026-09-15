@@ -5,9 +5,9 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
+	"github.com/holandyoung/dnsproxy/upstream"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +19,7 @@ func TestProxy_IsBogusNXDomain(t *testing.T) {
 	onExchange := newECSReplyHandler(&ans, nil, nil)
 	u := newTestECSUpstream(onExchange)
 
-	upsConf := newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr)
+	upsConf := newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t))
 	upsConf.Upstreams = []upstream.Upstream{u}
 
 	prx := mustNew(t, &Config{

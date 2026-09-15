@@ -12,37 +12,68 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestExchangeParallel launches several parallel exchanges
+// TestExchangeParallel proves first-success return without waiting for the
+// other real UDP exchanges. Reserved/public addresses are not failure fixtures.
 func TestExchangeParallel(t *testing.T) {
-	upstreams := []Upstream{}
-	upstreamList := []string{"1.2.3.4:55", "8.8.8.1", "8.8.8.8:53"}
-
-	for _, s := range upstreamList {
-		u, err := AddressToUpstream(s, &Options{
-			Logger:  testLogger,
-			Timeout: testTimeout,
-		})
-		if err != nil {
-			t.Fatalf("cannot create upstream: %s", err)
+	release := make(chan struct{})
+	arrived := make(chan struct{}, 2)
+	finished := make(chan struct{}, 2)
+	slowHandler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		arrived <- struct{}{}
+		<-release
+		require.NoError(testutil.PanicT{}, w.WriteMsg(respondToTestMessage(r)))
+		finished <- struct{}{}
+	})
+	slow1 := startDNSServer(t, slowHandler)
+	slow2 := startDNSServer(t, slowHandler)
+	fast := startDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		require.NoError(testutil.PanicT{}, w.WriteMsg(respondToTestMessage(r)))
+	})
+	t.Cleanup(func() {
+		close(release)
+		for range 2 {
+			select {
+			case <-finished:
+			case <-time.After(testTimeout):
+				t.Error("slow exchange did not finish during fixture cleanup")
+			}
 		}
+		require.NoError(t, slow1.Close())
+		require.NoError(t, slow2.Close())
+		require.NoError(t, fast.Close())
+	})
+	upstreams := []Upstream{}
+	for _, server := range []*testDNSServer{slow1, slow2, fast} {
+		u, err := AddressToUpstream(fmt.Sprintf("127.0.0.1:%d", server.port), &Options{Logger: testLogger, Timeout: testTimeout})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, u.Close()) })
 		upstreams = append(upstreams, u)
 	}
-
+	type result struct {
+		response *dns.Msg
+		winner   Upstream
+		err      error
+	}
+	resultCh := make(chan result, 1)
 	req := createTestMessage()
-	start := time.Now()
-	resp, u, err := ExchangeParallel(upstreams, req)
-	if err != nil {
-		t.Fatalf("no response from test upstreams: %s", err)
+	go func() {
+		response, winner, err := ExchangeParallel(upstreams, req)
+		resultCh <- result{response, winner, err}
+	}()
+	select {
+	case got := <-resultCh:
+		require.NoError(t, got.err)
+		require.Same(t, upstreams[2], got.winner)
+		requireResponse(t, req, got.response)
+	case <-time.After(time.Second):
+		t.Fatal("parallel resolution waited for still-blocked losers")
 	}
-
-	if u.Address() != "8.8.8.8:53" {
-		t.Fatalf("shouldn't happen. This upstream can't resolve DNS request: %s", u.Address())
-	}
-
-	requireResponse(t, req, resp)
-	elapsed := time.Since(start)
-	if elapsed > testTimeout {
-		t.Fatalf("exchange took more time than the configured timeout: %v", elapsed)
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(time.Second):
+			t.Fatal("parallel resolution did not start all upstreams")
+		}
 	}
 }
 

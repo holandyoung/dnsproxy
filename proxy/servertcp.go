@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 
-	"github.com/AdguardTeam/dnsproxy/internal/bootstrap"
-	proxynetutil "github.com/AdguardTeam/dnsproxy/internal/netutil"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/syncutil"
+	"github.com/holandyoung/dnsproxy/internal/bootstrap"
+	proxynetutil "github.com/holandyoung/dnsproxy/internal/netutil"
 	"github.com/miekg/dns"
 )
 
@@ -113,6 +114,7 @@ func (p *Proxy) tcpPacketLoop(
 		err = reqSema.Acquire(ctx)
 		if err != nil {
 			p.logger.ErrorContext(ctx, "acquiring sema", "proto", ProtoTCP, slogutil.KeyError, err)
+			_ = clientConn.Close()
 
 			break
 		}
@@ -131,12 +133,14 @@ func (p *Proxy) handleTCPConnection(
 ) {
 	defer slogutil.RecoverAndLog(ctx, p.logger)
 	defer reqSema.Release()
-	defer func() {
+	closeConn := sync.OnceFunc(func() {
 		err := conn.Close()
 		if err != nil {
 			logWithNonCrit(ctx, err, "closing conn", ProtoTCP, p.logger)
 		}
-	}()
+	})
+	stop := context.AfterFunc(ctx, closeConn)
+	defer func() { stop(); closeConn() }()
 
 	p.logger.DebugContext(ctx, "handling new request", "proto", proto, "raddr", conn.RemoteAddr())
 
@@ -193,7 +197,7 @@ const errTooLarge errors.Error = "dns message is too large"
 // length from conn.
 func readPrefixed(conn net.Conn) (b []byte, err error) {
 	l := make([]byte, 2)
-	_, err = conn.Read(l)
+	_, err = io.ReadFull(conn, l)
 	if err != nil {
 		return nil, fmt.Errorf("reading len: %w", err)
 	}
@@ -228,7 +232,7 @@ func (p *Proxy) respondTCP(d *DNSContext) error {
 	}
 
 	err = writePrefixed(bytes, conn)
-	if err != nil && !errors.Is(err, net.ErrClosed) {
+	if err != nil {
 		return fmt.Errorf("writing message: %w", err)
 	}
 

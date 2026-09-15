@@ -48,21 +48,11 @@ func (p *Proxy) initDNSCryptServers(ctx context.Context) (err error) {
 
 // startDNSCryptServers starts the DNSCrypt servers.
 func (p *Proxy) startDNSCryptServers(ctx context.Context) (err error) {
-	var started []*dnscrypt.Server
-
 	for i, s := range p.dnsCryptServers {
 		err = s.Start(ctx)
 		if err != nil {
-			closeErr := shutdownDNSCryptServers(ctx, started)
-
-			return fmt.Errorf(
-				"starting dnscrypt server at index %d: %w",
-				i,
-				errors.WithDeferred(err, closeErr),
-			)
+			return fmt.Errorf("starting dnscrypt server at index %d: %w", i, err)
 		}
-
-		started = append(started, s)
 	}
 
 	return nil
@@ -75,7 +65,7 @@ func shutdownDNSCryptServers(ctx context.Context, srvs []*dnscrypt.Server) (err 
 
 	for i, s := range srvs {
 		err = s.Shutdown(ctx)
-		if err != nil {
+		if err != nil && !errors.Is(err, dnscrypt.ErrServerNotStarted) {
 			errs = append(errs, fmt.Errorf("shutting down dnscrypt server at index %d: %w", i, err))
 		}
 	}

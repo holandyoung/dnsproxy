@@ -48,7 +48,7 @@ func TestHttpsProxy(t *testing.T) {
 				TLSListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
 				QUICListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
 				TLSConfig:      tlsConf,
-				UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+				UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t)),
 				TrustedProxies: defaultTrustedProxies,
 				HTTPConfig:     httpConf,
 			})
@@ -92,7 +92,7 @@ func TestProxy_trustedProxies(t *testing.T) {
 		}
 		dnsProxy := mustNew(t, &Config{
 			Logger:         testLogger,
-			UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+			UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t)),
 			TrustedProxies: defaultTrustedProxies,
 			RequestHandler: reqHandler,
 			TLSConfig:      tlsConf,

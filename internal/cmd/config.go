@@ -5,9 +5,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/proxy"
 	"github.com/AdguardTeam/golibs/osutil"
 	"github.com/AdguardTeam/golibs/timeutil"
+	"github.com/holandyoung/dnsproxy/proxy"
 	"gopkg.in/yaml.v3"
 )
 

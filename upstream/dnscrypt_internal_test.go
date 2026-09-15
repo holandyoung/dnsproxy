@@ -2,7 +2,7 @@ package upstream
 
 import (
 	"context"
-	"net/netip"
+	"github.com/holandyoung/dnsproxy/internal/dnsproxytest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -10,43 +10,18 @@ import (
 
 	"github.com/AdguardTeam/dnscrypt"
 	"github.com/AdguardTeam/golibs/errors"
-	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
-	"github.com/AdguardTeam/golibs/testutil/servicetest"
-	"github.com/ameshkov/dnsstamps"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// dnsCryptHandlerFunc is a function-based implementation of the
-// [dnscrypt.Handler] interface.
-//
-// TODO(d.kolyshev):  Move to dnscrypt.
-type dnsCryptHandlerFunc func(
-	ctx context.Context,
-	w dnscrypt.ResponseWriter,
-	r *dns.Msg,
-) (err error)
-
-// type check
-var _ dnscrypt.Handler = dnsCryptHandlerFunc(nil)
-
-// ServeDNS implements the [dnscrypt.Handler] interface for dnsCryptHandlerFunc.
-func (f dnsCryptHandlerFunc) ServeDNS(
-	ctx context.Context,
-	w dnscrypt.ResponseWriter,
-	r *dns.Msg,
-) (err error) {
-	return f(ctx, w, r)
-}
 
 // emptyDNSCryptHandler is a [dnscrypt.Handler] that does nothing and always
 // returns nil error.  It can be used in tests when the server's response is
 // not important.
 //
 // TODO(d.kolyshev):  Move to dnscrypt.
-var emptyDNSCryptHandler = dnsCryptHandlerFunc(func(
+var emptyDNSCryptHandler = dnsproxytest.DNSCryptHandler(func(
 	ctx context.Context,
 	w dnscrypt.ResponseWriter,
 	r *dns.Msg,
@@ -54,57 +29,18 @@ var emptyDNSCryptHandler = dnsCryptHandlerFunc(func(
 	return nil
 })
 
-// startTestDNSCryptServer starts a test DNSCrypt server with the specified
-// resolver config and handler.  rc and h must not be nil.
-func startTestDNSCryptServer(
-	tb testing.TB,
-	rc dnscrypt.ResolverConfig,
-	h dnscrypt.Handler,
-) (stamp dnsstamps.ServerStamp) {
-	tb.Helper()
-
-	cert, err := rc.NewCert()
-	require.NoError(tb, err)
-
-	addr := netip.AddrPortFrom(netutil.IPv4Localhost(), 0)
-	srvUDP, err := dnscrypt.NewServer(&dnscrypt.ServerConfig{
-		Handler:      h,
-		ResolverCert: cert,
-		Logger:       testLogger,
-		ProviderName: rc.ProviderName,
-		Addr:         addr,
-		Proto:        dnscrypt.ProtoUDP,
-	})
-	require.NoError(tb, err)
-
-	servicetest.RequireRun(tb, srvUDP, testTimeout)
-
-	addrStr := srvUDP.LocalAddr().String()
-	stamp, err = rc.CreateStamp(addrStr)
-	require.NoError(tb, err)
-
-	srvTCP, err := dnscrypt.NewServer(&dnscrypt.ServerConfig{
-		Handler:      h,
-		ResolverCert: cert,
-		Logger:       testLogger,
-		ProviderName: rc.ProviderName,
-		Addr:         netutil.NetAddrToAddrPort(srvUDP.LocalAddr()),
-		Proto:        dnscrypt.ProtoTCP,
-	})
-	require.NoError(tb, err)
-	servicetest.RequireRun(tb, srvTCP, testTimeout)
-
-	return stamp
-}
-
 func TestUpstreamDNSCrypt(t *testing.T) {
 	t.Parallel()
 
-	// AdGuard DNS (DNSCrypt)
-	address := "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20"
+	rc, err := dnscrypt.GenerateResolverConfig("example.org", nil, 0)
+	require.NoError(t, err)
+	stamp := dnsproxytest.StartDNSCryptServer(t, rc, dnsproxytest.DNSCryptHandler(func(ctx context.Context, w dnscrypt.ResponseWriter, r *dns.Msg) error {
+		return w.WriteMsg(ctx, respondToTestMessage(r))
+	}))
+	address := stamp.String()
 	u, err := AddressToUpstream(address, &Options{
 		Logger:  testLogger,
-		Timeout: dialTimeout,
+		Timeout: 10 * time.Second,
 	})
 	require.NoError(t, err)
 	testutil.CleanupAndRequireSuccess(t, u.Close)
@@ -121,7 +57,7 @@ func TestDNSCrypt_Exchange_truncated(t *testing.T) {
 	require.NoError(t, err)
 
 	var udpNum, tcpNum atomic.Uint32
-	h := dnsCryptHandlerFunc(func(
+	h := dnsproxytest.DNSCryptHandler(func(
 		ctx context.Context,
 		w dnscrypt.ResponseWriter,
 		r *dns.Msg,
@@ -151,7 +87,7 @@ func TestDNSCrypt_Exchange_truncated(t *testing.T) {
 		return w.WriteMsg(ctx, res)
 	})
 
-	srvStamp := startTestDNSCryptServer(t, rc, h)
+	srvStamp := dnsproxytest.StartDNSCryptServer(t, rc, h)
 	u, err := AddressToUpstream(srvStamp.String(), &Options{
 		Logger:  testLogger,
 		Timeout: testTimeout,
@@ -177,7 +113,7 @@ func TestDNSCrypt_Exchange_deadline(t *testing.T) {
 	rc, err := dnscrypt.GenerateResolverConfig("example.org", nil, 0)
 	require.NoError(t, err)
 
-	srvStamp := startTestDNSCryptServer(t, rc, emptyDNSCryptHandler)
+	srvStamp := dnsproxytest.StartDNSCryptServer(t, rc, emptyDNSCryptHandler)
 
 	// Use a shorter timeout to speed up the test.
 	u, err := AddressToUpstream(srvStamp.String(), &Options{
@@ -206,7 +142,7 @@ func TestDNSCrypt_Exchange_dialFail(t *testing.T) {
 	var u Upstream
 
 	require.True(t, t.Run("run_and_shutdown", func(t *testing.T) {
-		srvStamp := startTestDNSCryptServer(t, rc, emptyDNSCryptHandler)
+		srvStamp := dnsproxytest.StartDNSCryptServer(t, rc, emptyDNSCryptHandler)
 
 		// Use a shorter timeout to speed up the test.
 		u, err = AddressToUpstream(srvStamp.String(), &Options{
@@ -229,7 +165,7 @@ func TestDNSCrypt_Exchange_dialFail(t *testing.T) {
 	t.Run("restart", func(t *testing.T) {
 		const validationErr errors.Error = "bad cert"
 
-		srvStamp := startTestDNSCryptServer(t, rc, emptyDNSCryptHandler)
+		srvStamp := dnsproxytest.StartDNSCryptServer(t, rc, emptyDNSCryptHandler)
 
 		// Use a shorter timeout to speed up the test.
 		u, err = AddressToUpstream(srvStamp.String(), &Options{

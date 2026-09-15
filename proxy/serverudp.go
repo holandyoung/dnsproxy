@@ -7,13 +7,13 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/AdguardTeam/dnsproxy/internal/bootstrap"
-	proxynetutil "github.com/AdguardTeam/dnsproxy/internal/netutil"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/syncutil"
 	"github.com/AdguardTeam/golibs/validate"
+	"github.com/holandyoung/dnsproxy/internal/bootstrap"
+	proxynetutil "github.com/holandyoung/dnsproxy/internal/netutil"
 	"github.com/miekg/dns"
 )
 
@@ -148,6 +148,9 @@ func (p *Proxy) udpHandlePacket(
 
 	req := &dns.Msg{}
 	err := req.Unpack(packet)
+	d := p.newDNSContext(ProtoUDP, req, netutil.NetAddrToAddrPort(raddr))
+	d.Conn = conn
+	d.localIP = localIP
 	if err != nil {
 		if req.MsgHdr == (dns.MsgHdr{}) {
 			l.ErrorContext(ctx, "unpacking", slogutil.KeyError, err)
@@ -163,15 +166,9 @@ func (p *Proxy) udpHandlePacket(
 		// cases.
 		//
 		// See https://www.rfc-editor.org/rfc/rfc1035#section-4.1.1.
-		resp := p.messages.NewMsgFORMERR(req)
-		err = p.respondUDP(resp, conn, raddr, localIP)
-	} else {
-		d := p.newDNSContext(ProtoUDP, req, netutil.NetAddrToAddrPort(raddr))
-		d.Conn = conn
-		d.localIP = localIP
-
-		err = p.handleDNSRequest(ctx, d)
+		d.Res = p.messages.NewMsgFORMERR(req)
 	}
+	err = p.handleDNSRequest(ctx, d)
 	if err != nil {
 		l.DebugContext(ctx, "handling request", slogutil.KeyError, err)
 	}
@@ -199,10 +196,6 @@ func (p *Proxy) respondUDP(
 
 	n, err := proxynetutil.UDPWrite(bytes, conn, raddr, laddr)
 	if err != nil {
-		if errors.Is(err, net.ErrClosed) {
-			return nil
-		}
-
 		return fmt.Errorf("writing message: %w", err)
 	}
 
