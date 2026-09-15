@@ -37,7 +37,7 @@ func TestFastestAddr_ExchangeFastest(t *testing.T) {
 	})
 
 	t.Run("one_dead", func(t *testing.T) {
-		port := listen(t, netip.IPv4Unspecified())
+		port := listen(t, netip.MustParseAddr("127.0.0.1"))
 
 		f := New(&Config{
 			Logger:          l,
@@ -45,16 +45,15 @@ func TestFastestAddr_ExchangeFastest(t *testing.T) {
 		})
 		f.pingPorts = []uint{port}
 
-		// The alive IP is the just created local listener's address.  The dead
-		// one is known as TEST-NET-1 which shouldn't be routed at all.  See
-		// RFC-5737 (https://datatracker.ietf.org/doc/html/rfc5737).
+		// The listener binds only one loopback address. The adjacent loopback
+		// address has no listener; no external network reachability is assumed.
 		aliveAddr := netip.MustParseAddr("127.0.0.1")
 
 		alive := &testAUpstream{
 			recs: []*dns.A{newTestRec(t, aliveAddr)},
 		}
 		dead := &testAUpstream{
-			recs: []*dns.A{newTestRec(t, netip.MustParseAddr("192.0.2.1"))},
+			recs: []*dns.A{newTestRec(t, netip.MustParseAddr("127.0.0.2"))},
 		}
 
 		rep, ups, err := f.ExchangeFastest(newTestReq(t), []upstream.Upstream{dead, alive})

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -160,23 +161,35 @@ func startDNSServer(tb testing.TB, handler dns.HandlerFunc) (s *testDNSServer) {
 
 	s = &testDNSServer{}
 
-	udpListener, err := net.ListenPacket("udp", "127.0.0.1:0")
-	require.NoError(tb, err)
-
-	s.port = testutil.RequireTypeAssert[*net.UDPAddr](tb, udpListener.LocalAddr()).Port
-	s.udpListener = udpListener
-
-	s.tcpListener, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
-	require.NoError(tb, err)
+	// TCP and UDP have separate port spaces. Reserve both, releasing the
+	// first listener on a UDP collision before trying another ephemeral port.
+	for range 16 {
+		var err error
+		s.tcpListener, err = net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(tb, err)
+		s.port = testutil.RequireTypeAssert[*net.TCPAddr](tb, s.tcpListener.Addr()).Port
+		s.udpListener, err = net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", s.port))
+		if err == nil {
+			break
+		}
+		require.NoError(tb, s.tcpListener.Close())
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			require.NoError(tb, err)
+		}
+	}
+	require.NotNil(tb, s.udpListener, "could not reserve a shared TCP/UDP port")
+	started := make(chan struct{}, 2)
 
 	s.udpSrv = &dns.Server{
-		PacketConn: s.udpListener,
-		Handler:    handler,
+		PacketConn:        s.udpListener,
+		Handler:           handler,
+		NotifyStartedFunc: func() { started <- struct{}{} },
 	}
 
 	s.tcpSrv = &dns.Server{
-		Listener: s.tcpListener,
-		Handler:  handler,
+		Listener:          s.tcpListener,
+		Handler:           handler,
+		NotifyStartedFunc: func() { started <- struct{}{} },
 	}
 
 	go func() {
@@ -188,6 +201,8 @@ func startDNSServer(tb testing.TB, handler dns.HandlerFunc) (s *testDNSServer) {
 		pt := testutil.PanicT{}
 		require.NoError(pt, s.tcpSrv.ActivateAndServe())
 	}()
+	<-started
+	<-started
 
 	return s
 }

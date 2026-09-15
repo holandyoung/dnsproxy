@@ -54,7 +54,7 @@ func TestServeCached(t *testing.T) {
 		Logger:         testLogger,
 		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
 		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t)),
 		TrustedProxies: defaultTrustedProxies,
 		DNSSECEnabled:  false,
 		CacheEnabled:   true,
@@ -308,7 +308,7 @@ func TestCacheExpiration(t *testing.T) {
 		Logger:         testLogger,
 		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
 		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		UpstreamConfig: newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t)),
 		TrustedProxies: defaultTrustedProxies,
 		CacheEnabled:   true,
 	})

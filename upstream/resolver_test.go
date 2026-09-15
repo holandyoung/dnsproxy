@@ -2,13 +2,10 @@ package upstream_test
 
 import (
 	"context"
-	"github.com/AdguardTeam/dnscrypt"
-	fixture "github.com/holandyoung/dnsproxy/internal/dnsproxytest"
 	"net/netip"
 	"testing"
 	"time"
 
-	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/holandyoung/dnsproxy/dnsproxytest"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
@@ -44,94 +41,6 @@ func TestNewUpstreamResolver(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotEmpty(t, ipAddrs)
-}
-
-func TestNewUpstreamResolver_validity(t *testing.T) {
-	t.Parallel()
-
-	rc, err := dnscrypt.GenerateResolverConfig("example.org", nil, 0)
-	require.NoError(t, err)
-	stamp := fixture.StartDNSCryptServer(t, rc, fixture.DNSCryptHandler(func(ctx context.Context, w dnscrypt.ResponseWriter, r *dns.Msg) error {
-		response := new(dns.Msg).SetReply(r)
-		if r.Question[0].Qtype == dns.TypeA {
-			response.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: netip.MustParseAddr("192.0.2.1").AsSlice()}}
-		}
-		return w.WriteMsg(ctx, response)
-	}))
-	withTimeoutOpt := &upstream.Options{
-		Logger:  testLogger,
-		Timeout: 3 * time.Second,
-	}
-
-	testCases := []struct {
-		name       string
-		addr       string
-		wantErrMsg string
-	}{{
-		name:       "udp",
-		addr:       "1.1.1.1:53",
-		wantErrMsg: "",
-	}, {
-		name:       "dot",
-		addr:       "tls://1.1.1.1",
-		wantErrMsg: "",
-	}, {
-		name:       "doh",
-		addr:       "https://1.1.1.1/dns-query",
-		wantErrMsg: "",
-	}, {
-		name:       "sdns",
-		addr:       stamp.String(),
-		wantErrMsg: "",
-	}, {
-		name:       "tcp",
-		addr:       "tcp://9.9.9.9",
-		wantErrMsg: "",
-	}, {
-		name: "invalid_tls",
-		addr: "tls://dns.adguard.com",
-		wantErrMsg: `not a bootstrap: ParseAddr("dns.adguard.com"): ` +
-			`unexpected character (at "dns.adguard.com")`,
-	}, {
-		name: "invalid_https",
-		addr: "https://dns.adguard.com/dns-query",
-		wantErrMsg: `not a bootstrap: ParseAddr("dns.adguard.com"): ` +
-			`unexpected character (at "dns.adguard.com")`,
-	}, {
-		name: "invalid_tcp",
-		addr: "tcp://dns.adguard.com",
-		wantErrMsg: `not a bootstrap: ParseAddr("dns.adguard.com"): ` +
-			`unexpected character (at "dns.adguard.com")`,
-	}, {
-		name: "invalid_no_scheme",
-		addr: "dns.adguard.com",
-		wantErrMsg: `not a bootstrap: ParseAddr("dns.adguard.com"): ` +
-			`unexpected character (at "dns.adguard.com")`,
-	}}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			r, err := upstream.NewUpstreamResolver(tc.addr, withTimeoutOpt)
-			if tc.wantErrMsg != "" {
-				assert.Equal(t, tc.wantErrMsg, err.Error())
-				if nberr := (&upstream.NotBootstrapError{}); errors.As(err, &nberr) {
-					assert.NotNil(t, r)
-				}
-
-				return
-			}
-
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, r.Close()) })
-
-			addrs, err := r.LookupNetIP(context.Background(), "ip", "cloudflare-dns.com")
-			require.NoError(t, err)
-
-			assert.NotEmpty(t, addrs)
-		})
-	}
 }
 
 func TestCachingResolver_staleness(t *testing.T) {

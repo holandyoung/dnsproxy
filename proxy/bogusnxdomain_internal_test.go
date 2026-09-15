@@ -19,7 +19,7 @@ func TestProxy_IsBogusNXDomain(t *testing.T) {
 	onExchange := newECSReplyHandler(&ans, nil, nil)
 	u := newTestECSUpstream(onExchange)
 
-	upsConf := newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr)
+	upsConf := newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr(t))
 	upsConf.Upstreams = []upstream.Upstream{u}
 
 	prx := mustNew(t, &Config{

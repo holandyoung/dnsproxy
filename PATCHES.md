@@ -42,6 +42,12 @@ master gate: formatting, module integrity, vet, the full shuffled/repeated race
 suite and vulnerability scanning. Protocol conformance uses real local servers
 and certificates, without assumptions about public providers or reserved IPs.
 No failed assertion is converted into a skip.
+Inherited live-provider tests now use local native DNS/TLS/HTTP/DNSCrypt
+servers. Success and failure are controlled by those servers; reserved IP
+ranges are not treated as an unreachable-network oracle. Shared TCP/UDP
+fixtures reserve both port spaces and retry only address-in-use collisions,
+closing the first listener before retrying. Address-parser tests may still
+contain public address strings without making network requests.
 The inherited caching-resolver suite still skips its `ip4`/`ip6` staleness
 subcases: native cache keys do not distinguish those lookup networks. The
 application-owned bootstrap path bypasses that native caching resolver. These
