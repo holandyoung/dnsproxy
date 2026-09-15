@@ -7,6 +7,24 @@ fork revision directly; it does not replace the upstream module at build time.
 
 ## Required semantics and deviations
 
+Bootstrap preserves the application's stricter existing answer policy before
+`UpstreamResolver` reduces a DNS message to addresses: QR, opcode, ID, the exact
+question including class/case, and NOERROR must match; only records of the
+requested A/AAAA type are extracted. A plain upstream created specifically by
+`NewUpstreamResolver` delegates question policy to that boundary. It retries TCP
+for a successfully decoded TC response, but not for an invalid question alone
+or a partially decoded malformed TC frame. A failed UDP/TCP bootstrap exchange
+also does not retry the same server internally; the application advances its
+ordered server list. Business upstream question-to-TCP
+behavior is unchanged. The factory fixes this private policy before publishing
+the instance; no alternate Exchange interface or public compatibility option is
+introduced. `LookupNetIP` rejects an already canceled context. In-flight native
+lookups still require application-scoped NetworkDialer ownership and timeout;
+this change does not claim that the native lookup wait itself observes context.
+Evidence: `TestBootstrapMetadataBeforeAddressExtraction`,
+`TestBootstrapQuestionAndTruncationPolicy`, `TestBootstrapRequestedRRType`, and
+`TestBootstrapCanceledBeforeAdmission`.
+
 Complete protocol rejections never authorize a hidden query replay. Native
 DoT/DoQ reconnect only for connection failures on a retained connection; DNS
 codec/question/ID errors and DoQ invalid framing/FIN are final. DoH clients

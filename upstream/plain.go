@@ -45,6 +45,11 @@ type plainDNS struct {
 
 	// timeout is the timeout for DNS requests.
 	timeout time.Duration
+
+	// bootstrap delegates question/header policy to UpstreamResolver before
+	// it extracts addresses. A bad UDP question must advance to the next
+	// bootstrap server, rather than being hidden by a TCP replay.
+	bootstrap bool
 }
 
 // newPlain returns the plain DNS Upstream.  addr.Scheme should be either "udp"
@@ -115,7 +120,7 @@ func (p *plainDNS) dialExchange(
 	defer func(c net.Conn) { err = errors.WithDeferred(err, c.Close()) }(conn.Conn)
 
 	resp, err = p.exchangeWithConn(upstreamReq, conn, network, state)
-	if isExpectedConnErr(err) {
+	if !p.bootstrap && isExpectedConnErr(err) {
 		conn.Conn, err = dial(ctx, network, "")
 		if err != nil {
 			return nil, fmt.Errorf("dialing %s over %s again: %w", p.addr.Host, network, err)
@@ -151,7 +156,7 @@ func (p *plainDNS) exchangeWithConn(req *dns.Msg, conn *dns.Conn, network string
 	if err := conn.WriteMsg(req); err != nil {
 		return nil, err
 	}
-	return readDNSResponse(conn, req, state, network == networkUDP)
+	return readDNSResponse(conn, req, state, network == networkUDP, !p.bootstrap)
 }
 
 // connectedDatagram preserves the explicit UDP network at the miekg/dns
@@ -218,6 +223,11 @@ func (p *plainDNS) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, 
 	addr := p.Address()
 
 	resp, err = p.dialExchange(p.net, dial, req, state)
+	if p.bootstrap && err != nil {
+		// A partially decoded TC bit cannot authorize a continuation. Native
+		// bootstrap retries TCP only after a successfully decoded datagram.
+		return resp, err
+	}
 	if p.net != networkUDP {
 		// The network is already TCP.
 		return resp, err
@@ -228,7 +238,7 @@ func (p *plainDNS) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, 
 		return resp, err
 	}
 
-	if errors.Is(err, errQuestion) {
+	if !p.bootstrap && errors.Is(err, errQuestion) {
 		// The upstream responds with malformed messages, so try TCP.
 		p.logger.Debug(
 			"plain response is malformed, using tcp",
