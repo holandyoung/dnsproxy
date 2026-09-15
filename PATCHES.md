@@ -136,6 +136,12 @@ it must verify that its actual work respects the supplied deadline. Native
 ordered-bootstrap tests use short individual bootstrap budgets within the
 query budget and prove both failure-then-success and first-success termination.
 
+DoH request construction preserves the configured URL's escaped path. Dropping
+`RawPath` changed endpoints such as `/dns%2Fquery` into `/dns/query`. Actual
+HTTP/1.1, HTTP/2 and HTTP/3 exchanges cover encoded separators, literal escaped
+characters, question marks, fragments and percent signs before comparing the
+request path. The native GET query parameter and response validation are unchanged.
+
 Use a task branch, independent review of the exact commit, green local and PR
 checks, a PR to `master`, and CI verification of the resulting master commit.
 Upstream mirroring, private AdGuard automation, image publication and releases

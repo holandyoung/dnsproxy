@@ -280,6 +280,7 @@ func (p *dnsOverHTTPS) exchangeHTTPSClient(
 		User:     p.addr.User,
 		Host:     p.addr.Host,
 		Path:     p.addr.Path,
+		RawPath:  p.addr.RawPath,
 		RawQuery: q.Encode(),
 	}
 
