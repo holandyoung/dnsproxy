@@ -99,7 +99,7 @@ type Server struct {
 	providerName string
 	proto        Proto
 	udpSize      uint
-	// mu protects concurrent access to listeners, conns, wg and started.
+	// mu protects concurrent access to listeners, connections and run state.
 	mu sync.RWMutex
 	// started indicates whether the server is processing queries.
 	started bool

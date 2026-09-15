@@ -64,7 +64,7 @@ func (w *tcpResponseWriter) WriteMsg(ctx context.Context, m *dns.Msg) (err error
 
 // writeTCPResponse bounds only the server's physical write. Query execution
 // time belongs to the handler and must not consume this I/O deadline. Client
-// exchanges retain their own context deadline in writePrefixed.
+// exchanges retain their own context deadline in client.writeQuery.
 func writeTCPResponse(message []byte, conn net.Conn) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(defaultReadTimeout)); err != nil {
 		return err
