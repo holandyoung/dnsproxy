@@ -71,7 +71,7 @@ func TestUpstream_dnsOverTLS_race(t *testing.T) {
 			pt := testutil.PanicT{}
 
 			req := createTestMessage()
-			resp, uErr := u.Exchange(req)
+			resp, uErr := u.Exchange(req, nil)
 			require.NoError(pt, uErr)
 			requireResponse(pt, req, resp)
 		})
@@ -113,7 +113,7 @@ func TestUpstream_dnsOverTLS_poolReconnect(t *testing.T) {
 
 	// Send the first test message.
 	req := createTestMessage()
-	reply, err := u.Exchange(req)
+	reply, err := u.Exchange(req, nil)
 	require.NoError(t, err)
 	requireResponse(t, req, reply)
 
@@ -124,7 +124,7 @@ func TestUpstream_dnsOverTLS_poolReconnect(t *testing.T) {
 
 	// Send the second test message.
 	req = createTestMessage()
-	reply, err = u.Exchange(req)
+	reply, err = u.Exchange(req, nil)
 	require.NoError(t, err)
 	requireResponse(t, req, reply)
 
@@ -155,7 +155,7 @@ func TestUpstream_dnsOverTLS_poolDeadline(t *testing.T) {
 
 	// Send the first test message.
 	req := createTestMessage()
-	response, err := u.Exchange(req)
+	response, err := u.Exchange(req, nil)
 	require.NoError(t, err)
 	requireResponse(t, req, response)
 
@@ -172,7 +172,7 @@ func TestUpstream_dnsOverTLS_poolDeadline(t *testing.T) {
 	require.NoError(t, err)
 	require.Same(t, usedConn, conn)
 
-	response, err = p.exchangeWithConn(conn, req)
+	response, err = p.exchangeWithConn(conn, req, nil)
 	require.NoError(t, err)
 	requireResponse(t, req, response)
 
@@ -190,7 +190,7 @@ func TestUpstream_dnsOverTLS_poolDeadline(t *testing.T) {
 	require.NoError(t, err)
 	require.Same(t, usedConn, conn)
 
-	response, err = p.exchangeWithConn(usedConn, req)
+	response, err = p.exchangeWithConn(usedConn, req, nil)
 	require.NoError(t, err)
 	requireResponse(t, req, response)
 
@@ -199,7 +199,7 @@ func TestUpstream_dnsOverTLS_poolDeadline(t *testing.T) {
 	require.NoError(t, err)
 
 	// Connection with expired deadLine can't be used.
-	response, err = p.exchangeWithConn(usedConn, req)
+	response, err = p.exchangeWithConn(usedConn, req, nil)
 	require.Error(t, err)
 	require.Nil(t, response)
 }
@@ -298,7 +298,7 @@ func BenchmarkDoTUpstream(b *testing.B) {
 
 		b.RunParallel(func(p *testing.PB) {
 			for p.Next() {
-				_, _ = u.Exchange(<-reqChan)
+				_, _ = u.Exchange(<-reqChan, nil)
 			}
 		})
 	})

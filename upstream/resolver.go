@@ -220,7 +220,7 @@ func (r *UpstreamResolver) request(host string, n bootstrap.Network) (res *ipRes
 
 	// As per [Upstream.Exchange] documentation, the response is always returned
 	// if no error occurred.
-	resp, err := r.Exchange(req)
+	resp, err := r.Exchange(req, nil)
 	if err != nil {
 		return res, err
 	}

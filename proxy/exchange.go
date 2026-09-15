@@ -77,7 +77,7 @@ func (p *Proxy) exchange(
 	req *dns.Msg,
 ) (resp *dns.Msg, dur time.Duration, err error) {
 	startTime := p.time.Now()
-	resp, err = u.Exchange(req)
+	resp, err = u.Exchange(req, nil)
 
 	// Don't use [time.Since] because it uses [time.Now].
 	dur = p.time.Now().Sub(startTime)

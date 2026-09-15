@@ -54,7 +54,15 @@ var _ Upstream = (*dnsCrypt)(nil)
 func (p *dnsCrypt) Address() string { return p.addr.String() }
 
 // Exchange implements the [Upstream] interface for *dnsCrypt.
-func (p *dnsCrypt) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
+func (p *dnsCrypt) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error) {
+	if state != nil {
+		if err = state.start(req.Id); err != nil {
+			return nil, err
+		}
+		err = fmt.Errorf("DNSCrypt upstream does not expose a complete-message receipt boundary")
+		state.finish(err)
+		return nil, err
+	}
 	ctx := context.Background()
 	if p.timeout > 0 {
 		var cancel context.CancelFunc

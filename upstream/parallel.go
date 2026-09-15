@@ -71,7 +71,7 @@ func exchangeSingle(
 	ups Upstream,
 	req *dns.Msg,
 ) (resp *dns.Msg, resolved Upstream, err error) {
-	resp, err = ups.Exchange(req)
+	resp, err = ups.Exchange(req, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -98,7 +98,7 @@ func ExchangeAll(ups []Upstream, req *dns.Msg) (res []ExchangeAllResult, err err
 		return nil, ErrNoUpstreams
 	case 1:
 		var reply *dns.Msg
-		reply, err = ups[0].Exchange(req)
+		reply, err = ups[0].Exchange(req, nil)
 		if err != nil {
 			return nil, err
 		} else if reply == nil {
@@ -163,7 +163,7 @@ func receiveAsyncResult(resCh chan any) (res *ExchangeAllResult, err error) {
 // exchangeAsync tries to resolve DNS request with one upstream and sends the
 // result to respCh.
 func exchangeAsync(u Upstream, req *dns.Msg, resCh chan any) {
-	reply, err := u.Exchange(req)
+	reply, err := u.Exchange(req, nil)
 	if err != nil {
 		resCh <- err
 	} else {

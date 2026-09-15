@@ -98,7 +98,7 @@ func TestDNSCrypt_Exchange_truncated(t *testing.T) {
 	req := (&dns.Msg{}).SetQuestion("unit-test2.dns.adguard.com.", dns.TypeTXT)
 
 	// Check that response is not truncated (even though it's huge).
-	res, err := u.Exchange(req)
+	res, err := u.Exchange(req, nil)
 	require.NoError(t, err)
 
 	assert.False(t, res.Truncated)
@@ -127,7 +127,7 @@ func TestDNSCrypt_Exchange_deadline(t *testing.T) {
 
 	req := (&dns.Msg{}).SetQuestion("unit-test2.dns.adguard.com.", dns.TypeTXT)
 
-	res, err := u.Exchange(req)
+	res, err := u.Exchange(req, nil)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 
 	assert.Nil(t, res)
@@ -156,7 +156,7 @@ func TestDNSCrypt_Exchange_dialFail(t *testing.T) {
 		testutil.CleanupAndRequireSuccess(t, u.Close)
 
 		var res *dns.Msg
-		res, err = u.Exchange(req)
+		res, err = u.Exchange(req, nil)
 		require.Error(t, err)
 
 		assert.Nil(t, res)
@@ -178,7 +178,7 @@ func TestDNSCrypt_Exchange_dialFail(t *testing.T) {
 		require.NoError(t, err)
 
 		var res *dns.Msg
-		res, err = u.Exchange(req)
+		res, err = u.Exchange(req, nil)
 		require.ErrorIs(t, err, validationErr)
 
 		assert.Nil(t, res)

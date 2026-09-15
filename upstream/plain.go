@@ -89,9 +89,9 @@ func (p *plainDNS) dialExchange(
 	network network,
 	dial bootstrap.DialHandler,
 	req *dns.Msg,
+	state *ExchangeState,
 ) (resp *dns.Msg, err error) {
 	addr := p.Address()
-	client := &dns.Client{Timeout: p.timeout}
 
 	conn := &dns.Conn{}
 	upstreamReq := setRequestForNetwork(req, conn, network)
@@ -114,7 +114,7 @@ func (p *plainDNS) dialExchange(
 	}
 	defer func(c net.Conn) { err = errors.WithDeferred(err, c.Close()) }(conn.Conn)
 
-	resp, _, err = client.ExchangeWithConn(upstreamReq, conn)
+	resp, err = p.exchangeWithConn(upstreamReq, conn, network, state)
 	if isExpectedConnErr(err) {
 		conn.Conn, err = dial(ctx, network, "")
 		if err != nil {
@@ -125,14 +125,33 @@ func (p *plainDNS) dialExchange(
 		}
 		defer func(c net.Conn) { err = errors.WithDeferred(err, c.Close()) }(conn.Conn)
 
-		resp, _, err = client.ExchangeWithConn(upstreamReq, conn)
+		resp, err = p.exchangeWithConn(upstreamReq, conn, network, state)
 	}
 
 	if err != nil {
 		return resp, fmt.Errorf("exchanging with %s over %s: %w", addr, network, err)
 	}
 
-	return resp, validateResponse(upstreamReq, resp)
+	return resp, nil
+}
+
+// exchangeWithConn retains native miekg/dns framing, EDNS receive size and the
+// default plain-DNS I/O timeout, with receipt observation before decoding.
+func (p *plainDNS) exchangeWithConn(req *dns.Msg, conn *dns.Conn, network string, state *ExchangeState) (*dns.Msg, error) {
+	if opt := req.IsEdns0(); opt != nil && opt.UDPSize() >= dns.MinMsgSize {
+		conn.UDPSize = opt.UDPSize()
+	}
+	timeout := p.timeout
+	if timeout == 0 {
+		timeout = 2 * time.Second
+	}
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
+	if err := conn.WriteMsg(req); err != nil {
+		return nil, err
+	}
+	return readDNSResponse(conn, req, state, network == networkUDP)
 }
 
 // connectedDatagram preserves the explicit UDP network at the miekg/dns
@@ -185,7 +204,11 @@ func isExpectedConnErr(err error) (is bool) {
 }
 
 // Exchange implements the [Upstream] interface for *plainDNS.
-func (p *plainDNS) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
+func (p *plainDNS) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error) {
+	if err = state.start(req.Id); err != nil {
+		return nil, err
+	}
+	defer func() { state.finish(err) }()
 	dial, err := p.getDialer()
 	if err != nil {
 		// Don't wrap the error since it's informative enough as is.
@@ -194,7 +217,7 @@ func (p *plainDNS) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
 
 	addr := p.Address()
 
-	resp, err = p.dialExchange(p.net, dial, req)
+	resp, err = p.dialExchange(p.net, dial, req, state)
 	if p.net != networkUDP {
 		// The network is already TCP.
 		return resp, err
@@ -213,7 +236,7 @@ func (p *plainDNS) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
 			slogutil.KeyError, err,
 		)
 
-		return p.dialExchange(networkTCP, dial, req)
+		return p.dialExchange(networkTCP, dial, req, state)
 	} else if resp.Truncated {
 		// Fallback to TCP on truncated responses.
 		p.logger.Debug(
@@ -222,7 +245,7 @@ func (p *plainDNS) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
 			"addr", addr,
 		)
 
-		return p.dialExchange(networkTCP, dial, req)
+		return p.dialExchange(networkTCP, dial, req, state)
 	}
 
 	// There is either no error or the error isn't related to the received

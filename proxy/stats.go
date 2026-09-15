@@ -25,9 +25,9 @@ type upstreamWithStats struct {
 var _ upstream.Upstream = (*upstreamWithStats)(nil)
 
 // Exchange implements the [upstream.Upstream] for *upstreamWithStats.
-func (u *upstreamWithStats) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
+func (u *upstreamWithStats) Exchange(req *dns.Msg, state *upstream.ExchangeState) (resp *dns.Msg, err error) {
 	start := time.Now()
-	resp, err = u.upstream.Exchange(req)
+	resp, err = u.upstream.Exchange(req, state)
 	u.err = err
 	u.queryDuration = time.Since(start)
 

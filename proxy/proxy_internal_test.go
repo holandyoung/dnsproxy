@@ -1562,7 +1562,7 @@ func newECSReplyHandler(ans *[]dns.RR, ecsIP, ecsReqIP *net.IP) func(*dns.Msg) (
 var _ upstream.Upstream = (*testUpstream)(nil)
 
 // Exchange implements the upstream.Upstream interface for *testUpstream.
-func (u *testUpstream) Exchange(m *dns.Msg) (resp *dns.Msg, err error) {
+func (u *testUpstream) Exchange(m *dns.Msg, state *upstream.ExchangeState) (resp *dns.Msg, err error) {
 	return u.OnExchange(m)
 }
 

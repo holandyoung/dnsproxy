@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/AdguardTeam/golibs/errors"
@@ -120,7 +122,7 @@ func TestDNSOverQUIC_Exchange_quicCloseConn(t *testing.T) {
 			defer wg.Done()
 
 			req := createTestMessage()
-			_, errExch := u.Exchange(req)
+			_, errExch := u.Exchange(req, nil)
 
 			assert.NoError(t, errExch)
 		}(pt)
@@ -173,7 +175,7 @@ func TestDNSOverQUIC_serverRestart(t *testing.T) {
 	require.False(t, t.Failed())
 
 	t.Run("retry", func(t *testing.T) {
-		_, err := u.Exchange(createTestMessage())
+		_, err := u.Exchange(createTestMessage(), nil)
 		require.Error(t, err)
 
 		_ = startDoQServer(t, tlsConf, int(addr.Port()))
@@ -201,7 +203,7 @@ func TestDNSOverQUIC_0RTT(t *testing.T) {
 	req := createTestMessage()
 
 	// Trigger connection to a QUIC server.
-	resp, err := uq.Exchange(req)
+	resp, err := uq.Exchange(req, nil)
 	require.NoError(t, err)
 	requireResponse(t, req, resp)
 
@@ -217,7 +219,7 @@ func TestDNSOverQUIC_0RTT(t *testing.T) {
 	}()
 
 	// Trigger second connection.
-	resp, err = uq.Exchange(req)
+	resp, err = uq.Exchange(req, nil)
 	require.NoError(t, err)
 	requireResponse(t, req, resp)
 
@@ -271,6 +273,7 @@ func TestDNSOverQUIC_ReadMsg_partialRead(t *testing.T) {
 	newAnsIP := net.IP{192, 0, 2, 2}
 
 	newReq := createHostTestMessage("new.example")
+	newReq.Id = 0
 	newResp := (&dns.Msg{}).SetReply(newReq)
 	newResp.Answer = []dns.RR{&dns.A{
 		Hdr: dns.RR_Header{
@@ -289,25 +292,9 @@ func TestDNSOverQUIC_ReadMsg_partialRead(t *testing.T) {
 	binary.BigEndian.PutUint16(newBuf, uint16(len(newPacked)))
 	copy(newBuf[2:], newPacked)
 
-	stream := &testQUICStream{
-		onRead: func(p []byte) (n int, err error) {
-			if len(newBuf) == 0 {
-				return 0, io.EOF
-			}
+	stream := iotest.OneByteReader(bytes.NewReader(newBuf))
 
-			n = min(1, len(newBuf), len(p))
-
-			copy(p, newBuf[:n])
-			newBuf = newBuf[n:]
-
-			return n, nil
-		},
-		onCancelRead: func(code quic.StreamErrorCode) {
-			assert.Equal(t, quic.StreamErrorCode(0), code)
-		},
-	}
-
-	got, err := doq.readMsg(stream)
+	got, err := doq.readMsg(stream, newReq, nil)
 	require.NoError(t, err)
 	require.Len(t, got.Answer, 1)
 
@@ -316,26 +303,6 @@ func TestDNSOverQUIC_ReadMsg_partialRead(t *testing.T) {
 	a := testutil.RequireTypeAssert[*dns.A](t, got.Answer[0])
 
 	assert.Equal(t, newAnsIP, a.A)
-}
-
-// testQUICStream is a mock implementation of the [quicStream] interface for
-// tests.
-type testQUICStream struct {
-	onRead       func(p []byte) (n int, err error)
-	onCancelRead func(code quic.StreamErrorCode)
-}
-
-// type check
-var _ quicStream = (*testQUICStream)(nil)
-
-// Read implements the [quicStream] interface for *testQUICStream.
-func (s *testQUICStream) Read(p []byte) (n int, err error) {
-	return s.onRead(p)
-}
-
-// CancelRead implements the [quicStream] interface for *testQUICStream.
-func (s *testQUICStream) CancelRead(code quic.StreamErrorCode) {
-	s.onCancelRead(code)
 }
 
 // testDoHServer is an instance of a test DNS-over-QUIC server.

@@ -27,7 +27,7 @@ func (u *Upstream) Address() (addr string) {
 }
 
 // Exchange implements the [upstream.Upstream] interface for *Upstream.
-func (u *Upstream) Exchange(req *dns.Msg) (resp *dns.Msg, err error) {
+func (u *Upstream) Exchange(req *dns.Msg, state *upstream.ExchangeState) (resp *dns.Msg, err error) {
 	return u.OnExchange(req)
 }
 
