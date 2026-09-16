@@ -87,11 +87,12 @@ func (p *Proxy) newDNSCryptServer(
 			proxy:   p,
 			reqSema: p.requestsSema,
 		},
-		ResolverCert: p.dnsCryptResolverCert,
-		Logger:       p.logger,
-		ProviderName: p.dnsCryptProviderName,
-		Addr:         addr,
-		Proto:        proto,
+		ResolverCert:     p.dnsCryptResolverCert,
+		Logger:           p.logger,
+		ProviderName:     p.dnsCryptProviderName,
+		Addr:             addr,
+		Proto:            proto,
+		ListenerFailures: p.listenerFailures,
 	})
 }
 

@@ -140,6 +140,7 @@ func (p *Proxy) quicPacketLoop(
 				continue
 			}
 
+			p.reportListenerFailure(ctx, "quic", l.Addr(), err)
 			logQUICError(ctx, "accepting quic conn", err, p.logger)
 
 			break
@@ -147,6 +148,7 @@ func (p *Proxy) quicPacketLoop(
 
 		err = reqSema.Acquire(ctx)
 		if err != nil {
+			p.reportListenerFailure(ctx, "quic", l.Addr(), err)
 			p.logger.ErrorContext(
 				ctx,
 				"acquiring semaphore",

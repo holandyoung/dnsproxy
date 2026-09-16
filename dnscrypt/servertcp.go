@@ -82,6 +82,7 @@ func (s *Server) serveTCP(ctx context.Context) (err error) {
 
 	tcpWg := &sync.WaitGroup{}
 	defer tcpWg.Wait()
+	defer func(addr net.Addr) { s.reportListenerFailure(ctx, addr, err) }(s.tcpListener.Addr())
 
 	certTxt := s.getCertTXT()
 
@@ -118,16 +119,6 @@ func (s *Server) serveTCPLoop(
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			return false, nil
-		}
-
-		if isConnClosed(err) {
-			s.logger.InfoContext(ctx, "TCP listener closed, exiting loop")
-		} else {
-			s.logger.InfoContext(
-				ctx,
-				"got error when reading from TCP listener",
-				slogutil.KeyError, err,
-			)
 		}
 
 		return true, fmt.Errorf("reading tcp message: %w", err)

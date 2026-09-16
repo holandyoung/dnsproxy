@@ -81,6 +81,7 @@ func (s *Server) serveUDP(ctx context.Context) (err error) {
 
 	udpWg := &sync.WaitGroup{}
 	defer udpWg.Wait()
+	defer func(addr net.Addr) { s.reportListenerFailure(ctx, addr, err) }(s.udpConn.LocalAddr())
 
 	s.logger.InfoContext(ctx, "entering dnscrypt udp listening loop")
 	certTxt := s.getCertTXT()
@@ -120,12 +121,6 @@ func (s *Server) serveUDPLoop(
 			// Note that timeout errors will be here (i.e. hitting
 			// ReadDeadline).
 			return false, nil
-		}
-
-		if isConnClosed(err) {
-			s.logger.InfoContext(ctx, "UDP listener closed, exiting loop")
-		} else {
-			s.logger.InfoContext(ctx, "got error when reading from UDP", slogutil.KeyError, err)
 		}
 
 		return false, fmt.Errorf("reading udp message: %w", err)

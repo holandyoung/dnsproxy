@@ -63,16 +63,36 @@ func (p *Proxy) serveListeners(ctx context.Context) {
 
 	for _, l := range p.httpsListen {
 		srv := p.httpsServer
-		go func(l net.Listener) { _ = srv.Serve(l) }(l)
+		go func(l net.Listener) {
+			p.reportListenerFailure(ctx, "https", l.Addr(), srv.Serve(l))
+		}(l)
 	}
 
 	for _, l := range p.h3Listen {
 		srv := p.h3Server
-		go func(l *quic.EarlyListener) { _ = srv.ServeListener(l) }(l)
+		go func(l *quic.EarlyListener) {
+			p.reportListenerFailure(ctx, "h3", l.Addr(), srv.ServeListener(l))
+		}(l)
 	}
 
 	for _, l := range p.quicListen {
 		go p.quicPacketLoop(ctx, l, p.requestsSema)
+	}
+}
+
+// reportListenerFailure does not acquire the lifecycle mutex or write logs.
+// Only cancellation by this listener generation makes termination intentional;
+// net.ErrClosed from an independently lost socket must still reach its owner.
+func (p *Proxy) reportListenerFailure(ctx context.Context, protocol string, addr net.Addr, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	if err == nil {
+		err = errors.Error("listener stopped unexpectedly")
+	}
+	select {
+	case p.listenerFailures <- fmt.Errorf("%s listener %s: %w", protocol, addr, err):
+	default:
 	}
 }
 

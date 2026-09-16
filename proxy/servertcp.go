@@ -102,6 +102,7 @@ func (p *Proxy) tcpPacketLoop(
 	for {
 		clientConn, err := l.Accept()
 		if err != nil {
+			p.reportListenerFailure(ctx, string(proto), l.Addr(), err)
 			if errors.Is(err, net.ErrClosed) {
 				p.logger.DebugContext(ctx, "tcp connection closed", "addr", l.Addr())
 			} else {
@@ -113,6 +114,7 @@ func (p *Proxy) tcpPacketLoop(
 
 		err = reqSema.Acquire(ctx)
 		if err != nil {
+			p.reportListenerFailure(ctx, string(proto), l.Addr(), err)
 			p.logger.ErrorContext(ctx, "acquiring sema", "proto", ProtoTCP, slogutil.KeyError, err)
 			_ = clientConn.Close()
 

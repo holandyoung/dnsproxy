@@ -37,6 +37,12 @@ type Config struct {
 	// [slog.Default] with [LogPrefix] is used.
 	Logger *slog.Logger
 
+	// ListenerFailures receives fatal listener errors before diagnostic logging.
+	// The caller owns this channel and must not close it while the proxy can run.
+	// Delivery never blocks; use a buffer of at least one and act on the first
+	// failure. A nil channel disables reporting. Intentional shutdown is silent.
+	ListenerFailures chan<- error
+
 	// TrustedProxies is the trusted list of CIDR networks to detect proxy
 	// servers addresses from where the DoH requests should be handled.  The
 	// value of nil makes Proxy not trust any address.
