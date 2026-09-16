@@ -6,6 +6,8 @@ This is the `github.com/holandyoung/dnsproxy` integration fork of
 TLS policy and lifecycle changes, their reasons, tests and delivery workflow.
 The fork keeps the upstream license and authorship. It is a source dependency;
 upstream binaries and images do not contain these changes.
+The integrated [DNSCrypt library](dnscrypt/ADAPTATION.md) preserves its original
+source and license while fixing native TCP framing and forced shutdown.
 
 A simple DNS proxy server that supports all existing DNS protocols including
 `DNS-over-TLS`, `DNS-over-HTTPS`, `DNSCrypt`, and `DNS-over-QUIC`. Moreover,
