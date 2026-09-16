@@ -48,13 +48,15 @@ a second external fork or reimplementing DNSCrypt cryptography.
   bound certificate and encrypted-response writes using the native first-read
   timeout, starting immediately before the physical write. Handler execution
   does not consume that deadline. Slow peers cannot pin the connection indefinitely.
-- `ownership_test.go`: actual whole/split TCP frames, observed blocked writes,
+- `ownership_test.go`, `blocked_write_internal_test.go`: actual whole/split TCP frames, observed blocked writes,
   empty and partial TCP, expired-context closure, immediate shutdown/restart,
   slow successful encrypted handlers, and restart blocked until an admitted
   handler actually exits.
 
 Before the repair, the intact-frame control passed while the split frame and
-retained-writer assertions failed. The original upstream protocol, certificate,
+retained-writer assertions failed. The blocked-write fixture sets its accepted
+TCP socket send buffer explicitly before asserting an actual blocked write, so
+the precondition does not depend on the host's TCP autotuning limits. The original upstream protocol, certificate,
 client, crypto and UDP truncation tests remain part of the fork's full race gate.
 No new support for DNSCrypt receipt admission is implied: the product's six
 upstream protocols use the separate native receipt contract.

@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,44 +70,6 @@ func TestServer_TCPFragmentedPrefix(t *testing.T) {
 			require.Len(t, r.Answer, 1)
 		})
 	}
-}
-
-func blockedCertificateWrite() bool {
-	b := make([]byte, 4<<20)
-	n := runtime.Stack(b, true)
-	for _, stack := range strings.Split(string(b[:n]), "\n\n") {
-		if strings.Contains(stack, "dnscrypt.writePrefixed") && strings.Contains(stack, "waitWrite") {
-			return true
-		}
-	}
-	return false
-}
-
-func TestServer_ShutdownClosesBlockedCertificateWrite(t *testing.T) {
-	s := lifecycleServer(t)
-	c, err := net.Dial("tcp", s.LocalAddr().String())
-	require.NoError(t, err)
-	defer c.Close()
-	tcp := c.(*net.TCPConn)
-	require.NoError(t, tcp.SetReadBuffer(1024))
-	require.NoError(t, tcp.SetWriteDeadline(time.Now().Add(3*time.Second)))
-	frame := certificateFrame(t)
-	batch := make([]byte, 0, len(frame)*20000)
-	for range 20000 {
-		batch = append(batch, frame...)
-	}
-	_, err = tcp.Write(batch)
-	require.NoError(t, err)
-	require.Eventually(t, blockedCertificateWrite, 2*time.Second, 5*time.Millisecond, "must establish an actual blocked native TCP write")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	_ = s.Shutdown(ctx)
-	// The listener being released alone is insufficient: this peer must not be
-	// needed to release a retained server write after Shutdown has returned.
-	require.Eventually(t, func() bool { return !blockedCertificateWrite() }, time.Second, 5*time.Millisecond, "blocked accepted socket retained after shutdown")
-	l, err := net.Listen("tcp", s.LocalAddr().String())
-	require.NoError(t, err)
-	require.NoError(t, l.Close())
 }
 
 func TestServer_ShutdownClosesEmptyAndPartialTCP(t *testing.T) {
