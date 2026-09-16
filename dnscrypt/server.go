@@ -45,6 +45,12 @@ type ServerConfig struct {
 	// be used.
 	Logger *slog.Logger
 
+	// ListenerFailures receives fatal listener errors before logging or joining
+	// admitted handlers. Sending never blocks; callers should provide a buffered
+	// channel and act on the first failure. Only the caller may close the channel,
+	// after all serving runs have stopped. Nil disables reporting.
+	ListenerFailures chan<- error
+
 	// ProviderName is a DNSCrypt provider name.
 	ProviderName string
 
@@ -83,9 +89,10 @@ func (c *ServerConfig) Validate() (err error) {
 
 // Server is a DNSCrypt server implementation.
 type Server struct {
-	handler      Handler
-	resolverCert *Certificate
-	logger       *slog.Logger
+	handler          Handler
+	resolverCert     *Certificate
+	logger           *slog.Logger
+	listenerFailures chan<- error
 	// done closes only after the serving loop and its admitted handlers exit.
 	done        chan struct{}
 	cancel      context.CancelFunc
@@ -114,14 +121,15 @@ func NewServer(conf *ServerConfig) (s *Server, err error) {
 	}
 
 	return &Server{
-		handler:      cmp.Or(conf.Handler, defaultDNSCryptHandler),
-		resolverCert: conf.ResolverCert,
-		providerName: conf.ProviderName,
-		addr:         conf.Addr,
-		logger:       cmp.Or(conf.Logger, slog.Default()),
-		udpSize:      cmp.Or(conf.UDPSize, defaultUDPSize),
-		proto:        conf.Proto,
-		tcpConns:     map[net.Conn]struct{}{},
+		listenerFailures: conf.ListenerFailures,
+		handler:          cmp.Or(conf.Handler, defaultDNSCryptHandler),
+		resolverCert:     conf.ResolverCert,
+		providerName:     conf.ProviderName,
+		addr:             conf.Addr,
+		logger:           cmp.Or(conf.Logger, slog.Default()),
+		udpSize:          cmp.Or(conf.UDPSize, defaultUDPSize),
+		proto:            conf.Proto,
+		tcpConns:         map[net.Conn]struct{}{},
 	}, nil
 }
 
@@ -206,6 +214,21 @@ func (s *Server) Start(ctx context.Context) (err error) {
 		}
 	}()
 	return nil
+}
+
+// reportListenerFailure runs before waiting for handlers, since the owner must
+// be able to start bounded cleanup even if a handler never returns.
+func (s *Server) reportListenerFailure(ctx context.Context, addr net.Addr, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	if err == nil {
+		err = errors.Error("listener stopped unexpectedly")
+	}
+	select {
+	case s.listenerFailures <- fmt.Errorf("dnscrypt-%s listener %s: %w", s.proto, addr, err):
+	default:
+	}
 }
 
 // closeListeners closes server active network listeners.
@@ -373,22 +396,4 @@ func (s *Server) getCertTXT() (cert string) {
 	certBuf, _ := s.resolverCert.MarshalBinary()
 
 	return packTxtString(certBuf)
-}
-
-// isConnClosed checks if the error signals a closed server connection.
-func isConnClosed(err error) (ok bool) {
-	if err == nil {
-		return false
-	}
-
-	nerr, ok := err.(*net.OpError)
-	if !ok {
-		return false
-	}
-
-	if strings.Contains(nerr.Err.Error(), "use of closed network connection") {
-		return true
-	}
-
-	return false
 }

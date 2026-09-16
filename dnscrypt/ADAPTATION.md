@@ -48,6 +48,13 @@ a second external fork or reimplementing DNSCrypt cryptography.
   bound certificate and encrypted-response writes using the native first-read
   timeout, starting immediately before the physical write. Handler execution
   does not consume that deadline. Slow peers cannot pin the connection indefinitely.
+- `server.go`, `servertcp.go`, `serverudp.go`: fatal listener errors are sent to
+  the caller-owned bounded `ListenerFailures` channel before diagnostics or
+  joining admitted handlers. Intentional shutdown is identified by the serving
+  run's canceled context, not by matching a closed-socket error. The embedding
+  Proxy forwards the same failure channel; it can start bounded cleanup when a
+  listener fails even if an existing handler or log writer is stuck. No logging
+  callbacks, polling monitor or alternate protocol implementation is added.
 - `client.go`: certificate acquisition and encrypted exchanges close their
   actual sockets on context cancellation, including cancellation before a later
   deadline. Native miekg/dns still owns the certificate wire exchange. Optional
@@ -80,3 +87,11 @@ UDP source port, TCP peer closure, and configured-source selection in both phase
 The Linux dial-budget test fills a real loopback TCP accept queue, verifies the
 next handshake cannot complete, and requires certificate dialing to retain its
 native ceiling before the caller's later deadline.
+
+`listener_failure_internal_test.go` performs actual certificate and encrypted
+exchanges, retains a real admitted handler, then closes the native UDP or TCP
+listener. Failure must arrive while the handler still owns work; Shutdown must
+report its deadline until that handler exits. Repeated normal stop/restart must
+produce no false failure. Proxy tests independently cover native UDP, TCP, TLS,
+HTTPS, H3 and QUIC listener loss after successful DNS exchanges, including a
+blocked diagnostic handler.

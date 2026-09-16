@@ -350,7 +350,8 @@ type Proxy struct {
 
 	// servingCancel ends one listener generation, including accepted sockets
 	// waiting for a semaphore or a complete request. Protected by mu.
-	servingCancel context.CancelFunc
+	servingCancel    context.CancelFunc
+	listenerFailures chan<- error
 
 	// useDNS64 enables DNS64 handling.  If true, proxy will translate IPv4
 	// answers into IPv6 answers using first of DNS64Prefs.  Note also that PTR
@@ -373,6 +374,7 @@ type Proxy struct {
 // TODO(e.burkov):  Add context.
 func New(c *Config) (p *Proxy, err error) {
 	p = &Proxy{
+		listenerFailures:          c.ListenerFailures,
 		quicListenAddr:            c.QUICListenAddr,
 		tlsListenAddr:             c.TLSListenAddr,
 		tcpListenAddr:             c.TCPListenAddr,

@@ -89,6 +89,9 @@ func (p *Proxy) udpPacketLoop(ctx context.Context, conn *net.UDPConn, reqSema sy
 	b := make([]byte, dns.MaxMsgSize)
 	for p.isStarted() {
 		n, localIP, remoteAddr, err := proxynetutil.UDPRead(conn, b, p.udpOOBSize)
+		if err != nil {
+			p.reportListenerFailure(ctx, "udp", conn.LocalAddr(), err)
+		}
 		// The documentation says to handle the packet even if err occurs.
 		if n > 0 {
 			// Make a copy of all bytes because ReadFrom() will overwrite the
@@ -99,6 +102,7 @@ func (p *Proxy) udpPacketLoop(ctx context.Context, conn *net.UDPConn, reqSema sy
 
 			sErr := reqSema.Acquire(ctx)
 			if sErr != nil {
+				p.reportListenerFailure(ctx, "udp", conn.LocalAddr(), sErr)
 				p.logger.ErrorContext(
 					ctx,
 					"acquiring semaphore",
