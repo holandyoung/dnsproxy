@@ -9,11 +9,14 @@ import (
 	"net/netip"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 func blockedCertificateWrite() bool {
@@ -42,11 +45,17 @@ func TestServer_ShutdownClosesBlockedCertificateWrite(t *testing.T) {
 			require.NoError(t, err)
 		}
 	})
-	c, err := net.Dial("tcp", s.LocalAddr().String())
+	// Advertise a small receive window in the handshake itself. Reducing it
+	// after Connect can leave the initial large window available to the peer.
+	dialer := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error {
+		var setErr error
+		err := raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, 1024) })
+		return errors.Join(err, setErr)
+	}}
+	c, err := dialer.Dial("tcp", s.LocalAddr().String())
 	require.NoError(t, err)
 	defer c.Close()
 	tcp := c.(*net.TCPConn)
-	require.NoError(t, tcp.SetReadBuffer(1024))
 	require.NoError(t, tcp.SetWriteDeadline(time.Now().Add(3*time.Second)))
 	// Establish native acceptance before changing only this fixture's physical
 	// send buffer. A host's default autotuned send buffer is not a precondition.
@@ -72,7 +81,20 @@ func TestServer_ShutdownClosesBlockedCertificateWrite(t *testing.T) {
 	}
 	_, err = tcp.Write(batch)
 	require.NoError(t, err)
-	require.Eventually(t, blockedCertificateWrite, 2*time.Second, 5*time.Millisecond, "must establish an actual blocked native TCP write")
+	raw, err := accepted.SyscallConn()
+	require.NoError(t, err)
+	require.EventuallyWithT(t, func(check *assert.CollectT) {
+		var info *unix.TCPInfo
+		var infoErr error
+		err := raw.Control(func(fd uintptr) { info, infoErr = unix.GetsockoptTCPInfo(int(fd), unix.SOL_TCP, unix.TCP_INFO) })
+		require.NoError(check, err)
+		require.NoError(check, infoErr)
+		require.Zero(check, info.Snd_wnd)
+		require.True(check, blockedCertificateWrite())
+	}, time.Second, 5*time.Millisecond, "must establish a zero peer window and an actual blocked native TCP write")
+	// This assertion measures forced shutdown, independently of the ordinary
+	// write timeout. That timeout must not make a broken Shutdown look correct.
+	require.NoError(t, accepted.SetWriteDeadline(time.Now().Add(10*time.Second)))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	_ = s.Shutdown(ctx)
