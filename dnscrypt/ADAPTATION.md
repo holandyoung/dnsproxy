@@ -48,6 +48,12 @@ a second external fork or reimplementing DNSCrypt cryptography.
   bound certificate and encrypted-response writes using the native first-read
   timeout, starting immediately before the physical write. Handler execution
   does not consume that deadline. Slow peers cannot pin the connection indefinitely.
+- `client.go`: certificate acquisition and encrypted exchanges close their
+  actual sockets on context cancellation, including cancellation before a later
+  deadline. Native miekg/dns still owns the certificate wire exchange. Optional
+  `ClientConfig.LocalAddr` selects one real local source for both phases; this
+  lets listener health probes obey normal client ACLs without a second client
+  implementation or custom cryptographic setup.
 - `ownership_test.go`, `blocked_write_linux_test.go`: actual whole/split TCP frames, observed blocked writes,
   empty and partial TCP, expired-context closure, immediate shutdown/restart,
   slow successful encrypted handlers, and restart blocked until an admitted
@@ -63,3 +69,9 @@ are isolated in a Linux-specific test; the protocol/lifecycle tests remain porta
 client, crypto and UDP truncation tests remain part of the fork's full race gate.
 No new support for DNSCrypt receipt admission is implied: the product's six
 upstream protocols use the separate native receipt contract.
+
+The cancellation regression first proves that the certificate request or real
+encrypted query reached its loopback peer, then cancels the caller. Before the
+client repair, both UDP and TCP certificate reads remained alive until the later
+deadline. The new tests require immediate operation exit, reuse of the observed
+UDP source port, TCP peer closure, and configured-source selection in both phases.
