@@ -3,8 +3,7 @@ package dnscrypt
 import (
 	"context"
 	"encoding/binary"
-	"github.com/miekg/dns"
-	"github.com/stretchr/testify/require"
+	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -12,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/miekg/dns"
+	"github.com/stretchr/testify/require"
 )
 
 func blockedCertificateWrite() bool {
@@ -36,7 +38,9 @@ func TestServer_ShutdownClosesBlockedCertificateWrite(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_ = s.Shutdown(ctx)
+		if err := s.Shutdown(ctx); !errors.Is(err, ErrServerNotStarted) {
+			require.NoError(t, err)
+		}
 	})
 	c, err := net.Dial("tcp", s.LocalAddr().String())
 	require.NoError(t, err)
