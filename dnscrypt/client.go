@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
@@ -315,7 +316,13 @@ func (c *Client) fetchCert(
 
 	query := &dns.Msg{}
 	query.SetQuestion(providerName, dns.TypeTXT)
-	client := dns.Client{Net: string(c.proto), UDPSize: uint16(defaultUDPSize), Dialer: c.dialer}
+	// Supplying LocalAddr must not disable miekg/dns's ordinary two-second
+	// certificate dial budget. Encrypted exchanges retain their own policy.
+	dialer := *c.dialer
+	if dialer.Timeout == 0 {
+		dialer.Timeout = 2 * time.Second
+	}
+	client := dns.Client{Net: string(c.proto), UDPSize: uint16(defaultUDPSize), Dialer: &dialer}
 	conn, err := client.DialContext(ctx, stamp.ServerAddrStr)
 	if err != nil {
 		return nil, fmt.Errorf("dialing certificate server: %w", err)

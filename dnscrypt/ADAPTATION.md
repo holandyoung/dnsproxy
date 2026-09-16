@@ -53,7 +53,9 @@ a second external fork or reimplementing DNSCrypt cryptography.
   deadline. Native miekg/dns still owns the certificate wire exchange. Optional
   `ClientConfig.LocalAddr` selects one real local source for both phases; this
   lets listener health probes obey normal client ACLs without a second client
-  implementation or custom cryptographic setup.
+  implementation or custom cryptographic setup. Applying that source address
+  preserves miekg/dns's existing two-second certificate dial ceiling; the
+  encrypted-exchange budget remains unchanged.
 - `ownership_test.go`, `blocked_write_linux_test.go`: actual whole/split TCP frames, observed blocked writes,
   empty and partial TCP, expired-context closure, immediate shutdown/restart,
   slow successful encrypted handlers, and restart blocked until an admitted
@@ -75,3 +77,6 @@ encrypted query reached its loopback peer, then cancels the caller. Before the
 client repair, both UDP and TCP certificate reads remained alive until the later
 deadline. The new tests require immediate operation exit, reuse of the observed
 UDP source port, TCP peer closure, and configured-source selection in both phases.
+The Linux dial-budget test fills a real loopback TCP accept queue, verifies the
+next handshake cannot complete, and requires certificate dialing to retain its
+native ceiling before the caller's later deadline.
