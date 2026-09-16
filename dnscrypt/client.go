@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
@@ -53,6 +54,10 @@ type ClientConfig struct {
 	// Proto is the base network protocol.
 	Proto Proto
 
+	// LocalAddr is the optional local source for certificate and encrypted
+	// exchanges. Its concrete type must match Proto. Nil uses native selection.
+	LocalAddr net.Addr
+
 	// UDPSize is the maximum size of a DNS response (or query) this client
 	// can send or receive.  If not set, we use [dns.MinMsgSize] by default.
 	UDPSize int
@@ -70,7 +75,7 @@ type Client struct {
 func NewClient(conf *ClientConfig) (c *Client) {
 	return &Client{
 		logger:  cmp.Or(conf.Logger, slog.Default()),
-		dialer:  &net.Dialer{},
+		dialer:  &net.Dialer{LocalAddr: conf.LocalAddr},
 		proto:   conf.Proto,
 		udpSize: cmp.Or(conf.UDPSize, dns.MinMsgSize),
 	}
@@ -162,6 +167,13 @@ func (c *Client) ExchangeConnContext(
 	m *dns.Msg,
 	info *ResolverInfo,
 ) (resp *dns.Msg, err error) {
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Cancellation owns the actual in-flight socket, including a context with
+	// no deadline. A canceled connection cannot be reused for another exchange.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	query, clientNonce, err := c.encrypt(m, info)
 	if err != nil {
 		return nil, fmt.Errorf("encrypting: %w", err)
@@ -304,8 +316,21 @@ func (c *Client) fetchCert(
 
 	query := &dns.Msg{}
 	query.SetQuestion(providerName, dns.TypeTXT)
-	client := dns.Client{Net: string(c.proto), UDPSize: uint16(defaultUDPSize)}
-	r, _, err := client.ExchangeContext(ctx, query, stamp.ServerAddrStr)
+	// Supplying LocalAddr must not disable miekg/dns's ordinary two-second
+	// certificate dial budget. Encrypted exchanges retain their own policy.
+	dialer := *c.dialer
+	if dialer.Timeout == 0 {
+		dialer.Timeout = 2 * time.Second
+	}
+	client := dns.Client{Net: string(c.proto), UDPSize: uint16(defaultUDPSize), Dialer: &dialer}
+	conn, err := client.DialContext(ctx, stamp.ServerAddrStr)
+	if err != nil {
+		return nil, fmt.Errorf("dialing certificate server: %w", err)
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	r, _, err := client.ExchangeWithConnContext(ctx, query, conn)
 	if err != nil {
 		return nil, fmt.Errorf("sending dns query: %w", err)
 	}
