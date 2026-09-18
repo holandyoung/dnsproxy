@@ -237,12 +237,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if prx.IsValid() {
-		l := p.logger.With("addr", prx)
-
-		l.DebugContext(ctx, "request came from proxy server")
+		p.logger.DebugContext(ctx, "request came from proxy server", "addr", prx)
 
 		if !p.trustedProxies.Contains(prx.Addr()) {
-			l.DebugContext(ctx, "proxy is not trusted, using original remote addr")
+			p.logger.DebugContext(ctx, "proxy is not trusted, using original remote addr", "addr", prx)
 
 			// So the address of the proxy itself is used, as the remote address
 			// parsed from headers cannot be trusted.

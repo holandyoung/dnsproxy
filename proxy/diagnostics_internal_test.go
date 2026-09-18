@@ -5,8 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/AdguardTeam/golibs/testutil/servicetest"
 	"github.com/miekg/dns"
 )
 
@@ -103,5 +109,69 @@ func TestDNSDiagnosticsJSONPreservesParameterIdentity(t *testing.T) {
 		if record.DNS != message.String() {
 			t.Fatalf("complete native DNS presentation lost: %q, want %q", record.DNS, message.String())
 		}
+	}
+}
+
+type requestBindingAudit struct {
+	bindings, udp, httpProxy, incomplete atomic.Uint64
+}
+
+func (*requestBindingAudit) Enabled(context.Context, slog.Level) bool { return true }
+func (h *requestBindingAudit) WithAttrs([]slog.Attr) slog.Handler {
+	h.bindings.Add(1)
+	return h
+}
+func (h *requestBindingAudit) WithGroup(string) slog.Handler { return h }
+func (h *requestBindingAudit) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "handling new packet" && r.Message != "request came from proxy server" {
+		return nil
+	}
+	fields := map[string]slog.Value{}
+	r.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value; return true })
+	if r.Message == "handling new packet" {
+		h.udp.Add(1)
+		if fields["raddr"].Any() == nil || fields["laddr"].Any() == nil || fields[logKeyProto].Any() != ProtoUDP {
+			h.incomplete.Add(1)
+		}
+	} else {
+		h.httpProxy.Add(1)
+		if fields["addr"].Any() == nil {
+			h.incomplete.Add(1)
+		}
+	}
+	return nil
+}
+
+func TestRequestDiagnosticsHavePerRecordOwnership(t *testing.T) {
+	h := new(requestBindingAudit)
+	p := mustNew(t, &Config{
+		Logger: slog.New(h), UDPListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		HTTPConfig: &HTTPConfig{InsecureEnabled: true}, RequestHandler: HandlerFunc(replyLocally),
+		TrustedProxies: defaultTrustedProxies,
+	})
+	servicetest.RequireRun(t, p, testTimeout)
+	q := new(dns.Msg).SetQuestion("diagnostic.example.", dns.TypeA)
+	r, _, err := (&dns.Client{Timeout: time.Second}).Exchange(q, p.Addr(ProtoUDP).String())
+	if err != nil || r == nil || r.Rcode != dns.RcodeSuccess {
+		t.Fatalf("UDP query prerequisite: %v %v", r, err)
+	}
+	wire, err := q.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "http://diagnostic.example/dns-query", bytes.NewReader(wire))
+	request.RemoteAddr = "127.0.0.1:42001"
+	request.Header.Set("Content-Type", "application/dns-message")
+	request.Header.Set("X-Real-IP", "192.0.2.1")
+	response := httptest.NewRecorder()
+	p.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxied HTTP prerequisite: %d %s", response.Code, response.Body.String())
+	}
+	if h.udp.Load() != 1 || h.httpProxy.Load() != 1 {
+		t.Fatalf("request paths not both observed: udp=%d http=%d", h.udp.Load(), h.httpProxy.Load())
+	}
+	if h.bindings.Load() != 0 || h.incomplete.Load() != 0 {
+		t.Fatalf("request diagnostics escaped per-record admission: bindings=%d incomplete=%d", h.bindings.Load(), h.incomplete.Load())
 	}
 }
