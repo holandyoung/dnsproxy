@@ -147,8 +147,19 @@ func (p *Proxy) udpHandlePacket(
 	ctx, cancel := p.reqCtx.New(ctx)
 	defer cancel()
 
-	l := p.logger.With("raddr", raddr, "laddr", localIP, logKeyProto, ProtoUDP)
-	l.DebugContext(ctx, "handling new packet")
+	// Request values belong to each record's Handle admission, not to an
+	// independently retained child handler with no release operation.
+	logPacket := func(level slog.Level, message string, packetErr error) {
+		if !p.logger.Enabled(ctx, level) {
+			return
+		}
+		attrs := []slog.Attr{slog.Any("raddr", raddr), slog.Any("laddr", localIP), slog.Any(logKeyProto, ProtoUDP)}
+		if packetErr != nil {
+			attrs = append(attrs, slog.Any(slogutil.KeyError, packetErr))
+		}
+		p.logger.LogAttrs(ctx, level, message, attrs...)
+	}
+	logPacket(slog.LevelDebug, "handling new packet", nil)
 
 	req := &dns.Msg{}
 	err := req.Unpack(packet)
@@ -157,12 +168,12 @@ func (p *Proxy) udpHandlePacket(
 	d.localIP = localIP
 	if err != nil {
 		if req.MsgHdr == (dns.MsgHdr{}) {
-			l.ErrorContext(ctx, "unpacking", slogutil.KeyError, err)
+			logPacket(slog.LevelError, "unpacking", err)
 
 			return
 		}
 
-		l.DebugContext(ctx, "unpacking", slogutil.KeyError, err)
+		logPacket(slog.LevelDebug, "unpacking", err)
 
 		// Dropping a UDP request with a valid header is considered bad practice
 		// since it creates a denial-of-service (DoS) vulnerability for the
@@ -174,7 +185,7 @@ func (p *Proxy) udpHandlePacket(
 	}
 	err = p.handleDNSRequest(ctx, d)
 	if err != nil {
-		l.DebugContext(ctx, "handling request", slogutil.KeyError, err)
+		logPacket(slog.LevelDebug, "handling request", err)
 	}
 }
 

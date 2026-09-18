@@ -243,9 +243,27 @@ func (p *Proxy) setMinMaxTTL(ctx context.Context, r *dns.Msg) {
 	}
 }
 
-// logDNSMessage logs the given DNS message.
+// DNSMessage is a borrowed DNS diagnostic value. LogValue uses the native text
+// representation to preserve all RR types, including parameter types encoded as
+// empty Go structs. Plain encoding/json of dns.Msg loses those identities.
+// Asynchronous handlers must copy Msg before returning from Handle and must not
+// resolve this value until they process the owned snapshot.
+type DNSMessage struct {
+	Msg *dns.Msg
+}
+
+func (v DNSMessage) LogValue() slog.Value {
+	if v.Msg == nil {
+		return slog.AnyValue(nil)
+	}
+	return slog.StringValue(v.Msg.String())
+}
+
+// logDNSMessage passes the borrowed message to the logger without formatting.
+// Handlers retaining the record after Handle returns must snapshot mutable
+// attributes before returning, as required for any asynchronous slog handler.
 func (p *Proxy) logDNSMessage(ctx context.Context, m *dns.Msg) {
-	if m == nil {
+	if m == nil || !p.logger.Enabled(ctx, slog.LevelDebug) {
 		return
 	}
 
@@ -256,7 +274,7 @@ func (p *Proxy) logDNSMessage(ctx context.Context, m *dns.Msg) {
 		msg = "in"
 	}
 
-	slogutil.PrintLines(ctx, p.logger, slog.LevelDebug, msg, m.String())
+	p.logger.DebugContext(ctx, "dns message", "direction", msg, "dns", DNSMessage{Msg: m})
 }
 
 // logWithNonCrit logs the error on the appropriate level depending on whether
