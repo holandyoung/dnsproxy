@@ -199,6 +199,15 @@ stamp in the generic upstream parser does not establish pin enforcement.
 
 ## Frame, cache and certificate representation boundaries
 
+The QUIC dependency uses the temporary `github.com/holandyoung/quic-go` module
+for synchronized peer-parameter publication and 0-RTT/datagram generation
+ownership. `go.mod` alone owns its immutable pin. The application must consume
+the same module and revision, without production replace directives or a second
+official QUIC module. Follow the [fork maintenance and exit rules](https://github.com/holandyoung/quic-go/blob/hcdns/PATCHES.md):
+inspect official releases and actual source before each product release or
+dependency update; once equivalent official behavior passes the original
+race/0-RTT/consumer regressions, switch both consumers back and retire the patches.
+
 `proxyutil.LengthPrefix` is the sole checked 16-bit frame encoder; the unchecked
 `AddPrefix` API is removed. TCP retains scatter/gather writes without copying
 the complete payload. DoQ rejects oversized packed requests before opening a
