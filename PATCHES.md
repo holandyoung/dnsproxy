@@ -45,6 +45,19 @@ The bootstrap parallel resolver retains its channel-result recovery boundary and
 the native FromRecovered conversion needed by callers; only its diagnostic value
 uses the same shared package. Disabled logging cannot suppress that error result.
 
+Recovery also closes two inherited ownership gaps: DNSCrypt TCP workers defer
+accepted-socket close and registry removal before recovery logging; a handler
+panic no longer retains the socket until Shutdown. Proxy.LookupNetIP now recovers
+each address-family result before its sole buffered channel send, preserving the
+original panic error while allowing the other family to succeed. Cancellation
+returns promptly, pre-canceled calls start no work, and already-started workers
+can publish and exit after the caller leaves; native I/O keeps its existing
+upstream timeout and shutdown owner. Real encrypted TCP panic/healthy follow-up,
+dual-family panic/partial success, and synctest cancellation/drain cover these
+boundaries. Socket-cancellation tests inspect the exact peer-observed native
+socket's closed state; a fresh bind of its old ephemeral port races unrelated
+allocations and is not a reliable ownership assertion.
+
 The inherited pending-request test released its upstream when handlers entered,
 before every request had actually joined the pending wave. A forced late Resolve
 reproduces its false single-exchange assertion and recovered-panic/EOF failure.

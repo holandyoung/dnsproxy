@@ -120,3 +120,9 @@ report its deadline until that handler exits. Repeated normal stop/restart must
 produce no false failure. Proxy tests independently cover native UDP, TCP, TLS,
 HTTPS, H3 and QUIC listener loss after successful DNS exchanges, including a
 blocked diagnostic handler.
+Accepted TCP workers defer socket close and registry removal on every exit,
+including handler panic, before recovery diagnostics. The real encrypted panic
+test verifies immediate peer EOF, an empty connection registry before Shutdown,
+and a successful subsequent query. Cancellation tests retain the exact native
+socket to verify closure without rebinding an ephemeral port another test can
+legitimately acquire.

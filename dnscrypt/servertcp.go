@@ -137,14 +137,15 @@ func (s *Server) serveTCPLoop(
 
 	tcpWg.Go(func() {
 		defer diagnostic.RecoverAndLog(ctx, s.logger)
-
+		// Release the accepted socket and its ownership on every exit, before
+		// panic presentation can block in a synchronous diagnostic handler.
+		defer func() {
+			_ = conn.Close()
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			delete(s.tcpConns, conn)
+		}()
 		_ = s.handleTCPConnection(ctx, conn, certTxt)
-		_ = conn.Close()
-
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		delete(s.tcpConns, conn)
 	})
 
 	return false, nil

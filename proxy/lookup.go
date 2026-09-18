@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"log/slog"
 	"net/netip"
 	"slices"
 
@@ -13,28 +14,35 @@ import (
 	"github.com/miekg/dns"
 )
 
-// helper struct to pass results of lookupIPAddr function
+// lookupResult is the complete result of one address-family lookup, including
+// a recovered panic. Its caller owns exactly one channel send for every call.
 type lookupResult struct {
 	resp *dns.Msg
 	err  error
 }
 
-// lookupIPAddr resolves the specified host IP addresses.  It is intended to be
-// used as a goroutine.
+// lookupIPAddr resolves one address family. Recovery completes the named result
+// before the caller publishes it, so logging cannot erase a completion signal.
 func (p *Proxy) lookupIPAddr(
 	ctx context.Context,
 	host string,
 	qtype uint16,
-	ch chan *lookupResult,
-) {
-	defer diagnostic.RecoverAndLog(ctx, p.logger)
+) (result lookupResult) {
+	defer func() {
+		if value := recover(); value != nil {
+			result = lookupResult{err: errors.FromRecovered(value)}
+			if p.logger.Enabled(ctx, slog.LevelError) {
+				p.logger.LogAttrs(ctx, slog.LevelError, "recovered from panic", slog.Any("panic", diagnostic.RecoveredPanic{Value: value}))
+			}
+		}
+	}()
 
 	req := (&dns.Msg{}).SetQuestion(host, qtype)
 
 	// TODO(d.kolyshev): Investigate why the client address is not defined.
 	d := p.newDNSContext(ProtoUDP, req, netip.AddrPort{})
 	err := p.Resolve(ctx, d)
-	ch <- &lookupResult{
+	return lookupResult{
 		resp: d.Res,
 		err:  err,
 	}
@@ -58,16 +66,27 @@ func (p *Proxy) LookupNetIP(
 	if host == "" {
 		return nil, ErrEmptyHost
 	}
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	host = dns.Fqdn(host)
 
-	ch := make(chan *lookupResult)
-	go p.lookupIPAddr(ctx, host, dns.TypeA, ch)
-	go p.lookupIPAddr(ctx, host, dns.TypeAAAA, ch)
+	// Each worker can publish even if cancellation has released the caller.
+	// Native I/O remains owned by its existing upstream timeout and shutdown.
+	ch := make(chan lookupResult, 2)
+	for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA} {
+		go func() { ch <- p.lookupIPAddr(ctx, host, qtype) }()
+	}
 
 	var errs []error
 	for range 2 {
-		result := <-ch
+		var result lookupResult
+		select {
+		case result = <-ch:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		if result.err != nil {
 			errs = append(errs, result.err)
 
