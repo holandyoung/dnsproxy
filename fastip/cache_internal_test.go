@@ -13,7 +13,7 @@ import (
 func TestCacheAdd(t *testing.T) {
 	f := New(&Config{Logger: slogutil.NewDiscardLogger()})
 	ent := cacheEntry{
-		status:      0,
+		failed:      false,
 		latencyMsec: 111,
 	}
 
@@ -27,7 +27,7 @@ func TestCacheAdd(t *testing.T) {
 func TestCacheTtl(t *testing.T) {
 	f := New(&Config{Logger: slogutil.NewDiscardLogger()})
 	ent := cacheEntry{
-		status:      0,
+		failed:      false,
 		latencyMsec: 111,
 	}
 
@@ -53,7 +53,7 @@ func TestCacheAddSuccessfulOverwrite(t *testing.T) {
 	// check that it's there
 	ent := f.cacheFind(ip)
 	assert.NotNil(t, ent)
-	assert.Equal(t, 1, ent.status)
+	assert.True(t, ent.failed)
 
 	// check that it will overwrite existing rec
 	f.cacheAddSuccessful(ip, 11)
@@ -61,8 +61,8 @@ func TestCacheAddSuccessfulOverwrite(t *testing.T) {
 	// check that it's there now
 	ent = f.cacheFind(ip)
 	assert.NotNil(t, ent)
-	assert.Equal(t, 0, ent.status)
-	assert.Equal(t, uint(11), ent.latencyMsec)
+	assert.False(t, ent.failed)
+	assert.Equal(t, int64(11), ent.latencyMsec)
 }
 
 func TestCacheAddFailureNoOverwrite(t *testing.T) {
@@ -74,7 +74,7 @@ func TestCacheAddFailureNoOverwrite(t *testing.T) {
 	// check that it's there
 	ent := f.cacheFind(ip)
 	assert.NotNil(t, ent)
-	assert.Equal(t, 0, ent.status)
+	assert.False(t, ent.failed)
 
 	// check that it will overwrite existing rec
 	f.cacheAddFailure(ip)
@@ -82,22 +82,22 @@ func TestCacheAddFailureNoOverwrite(t *testing.T) {
 	// check that the old record is still there
 	ent = f.cacheFind(ip)
 	assert.NotNil(t, ent)
-	assert.Equal(t, 0, ent.status)
-	assert.Equal(t, uint(11), ent.latencyMsec)
+	assert.False(t, ent.failed)
+	assert.Equal(t, int64(11), ent.latencyMsec)
 }
 
 // TODO(ameshkov): Actually test something.
 func TestCache(_ *testing.T) {
 	f := New(&Config{Logger: slogutil.NewDiscardLogger()})
 	ent := cacheEntry{
-		status:      0,
+		failed:      false,
 		latencyMsec: 111,
 	}
 
-	val := packCacheEntry(&ent, 1)
+	val := packCacheEntry(&ent, 1, time.Now().Unix())
 	f.ipCache.Set(net.ParseIP("1.1.1.1").To4(), val)
 	ent = cacheEntry{
-		status:      0,
+		failed:      false,
 		latencyMsec: 222,
 	}
 

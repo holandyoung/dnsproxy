@@ -43,7 +43,7 @@ func TestFastestAddr_ExchangeFastest(t *testing.T) {
 			Logger:          l,
 			PingWaitTimeout: DefaultPingWaitTimeout,
 		})
-		f.pingPorts = []uint{port}
+		f.pingPorts = []uint16{port}
 
 		// The listener binds only one loopback address. The adjacent loopback
 		// address has no listener; no external network reachability is assumed.
@@ -73,7 +73,7 @@ func TestFastestAddr_ExchangeFastest(t *testing.T) {
 			Logger:          l,
 			PingWaitTimeout: DefaultPingWaitTimeout,
 		})
-		f.pingPorts = []uint{dnsproxytest.NewFreePort(t)}
+		f.pingPorts = []uint16{dnsproxytest.NewFreePort(t)}
 
 		firstIP := netip.MustParseAddr("127.0.0.1")
 		ups := &testAUpstream{

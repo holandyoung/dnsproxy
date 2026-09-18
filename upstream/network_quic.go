@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 
-	"github.com/quic-go/quic-go"
+	"github.com/holandyoung/quic-go"
 )
 
 // dialQUIC is the single connection boundary for DoQ, HTTP/3, and HTTP/3

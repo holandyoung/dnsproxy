@@ -1,18 +1,14 @@
 name: CI
-
 on:
   push:
     branches: [master, 'hcdns/**']
   pull_request:
     branches: [master]
-
 permissions:
   contents: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -23,5 +19,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: Install validation tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck jq
       - name: Verify the fork
         run: sh scripts/check.sh

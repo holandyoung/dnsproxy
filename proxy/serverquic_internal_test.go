@@ -13,8 +13,8 @@ import (
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
 	"github.com/holandyoung/dnsproxy/proxyutil"
+	"github.com/holandyoung/quic-go"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -170,7 +170,9 @@ func TestProxy_quicTruncatedRequest(t *testing.T) {
 	packed, err := req.Pack()
 	require.NoError(t, err)
 
-	fullBuf := proxyutil.AddPrefix(packed)
+	prefix, err := proxyutil.LengthPrefix(len(packed))
+	require.NoError(t, err)
+	fullBuf := append(prefix[:], packed...)
 
 	dnsProxy.bytesPool = syncutil.NewPool(func() (v *[]byte) {
 		b := make([]byte, 2+dns.MaxMsgSize)
@@ -204,7 +206,9 @@ func TestProxy_quicTruncatedRequest(t *testing.T) {
 	require.Greater(t, truncLen, 0)
 
 	truncated := packed[:truncLen]
-	reqBuf := proxyutil.AddPrefix(truncated)
+	truncatedPrefix, err := proxyutil.LengthPrefix(len(truncated))
+	require.NoError(t, err)
+	reqBuf := append(truncatedPrefix[:], truncated...)
 	require.Greater(t, len(reqBuf), minDNSPacketSize)
 
 	stream, err := conn.OpenStreamSync(ctx)
@@ -250,7 +254,9 @@ func sendQUICMessage(
 
 	buf := packedMsg
 	if doqVersion == DoQv1 {
-		buf = proxyutil.AddPrefix(packedMsg)
+		prefix, prefixErr := proxyutil.LengthPrefix(len(packedMsg))
+		require.NoError(t, prefixErr)
+		buf = append(prefix[:], packedMsg...)
 	}
 
 	// Send the DNS query to the stream.

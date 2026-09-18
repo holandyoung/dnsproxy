@@ -17,9 +17,9 @@ import (
 	"github.com/AdguardTeam/golibs/ioutil"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
+	"github.com/holandyoung/quic-go"
+	"github.com/holandyoung/quic-go/http3"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/net/http2"
 )
 

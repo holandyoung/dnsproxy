@@ -45,6 +45,7 @@ func (rd *recursionDetector) check(msg *dns.Msg) (ok bool) {
 		return false
 	}
 
+	// #nosec G115 -- Restore the signed UnixNano bit pattern written by add.
 	expire := time.Unix(0, int64(binary.BigEndian.Uint64(expireData)))
 
 	return time.Now().Before(expire)

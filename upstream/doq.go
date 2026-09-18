@@ -17,8 +17,8 @@ import (
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/holandyoung/dnsproxy/proxyutil"
+	"github.com/holandyoung/quic-go"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
 )
 
 const (
@@ -240,6 +240,11 @@ func (p *dnsOverQUIC) exchangeQUIC(req *dns.Msg, conn *quic.Conn, state *Exchang
 	if err != nil {
 		return nil, fmt.Errorf("failed to pack DNS message for DoQ: %w", err)
 	}
+	prefix, err := proxyutil.LengthPrefix(len(buf))
+	if err != nil {
+		return nil, err
+	}
+	buf = append(prefix[:], buf...)
 
 	stream, err := p.openStream(conn)
 	if err != nil {
@@ -257,7 +262,7 @@ func (p *dnsOverQUIC) exchangeQUIC(req *dns.Msg, conn *quic.Conn, state *Exchang
 		}
 	}
 
-	_, err = stream.Write(proxyutil.AddPrefix(buf))
+	_, err = stream.Write(buf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write to a QUIC stream: %w", err)
 	}

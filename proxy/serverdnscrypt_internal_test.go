@@ -7,8 +7,8 @@ import (
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
-	"github.com/ameshkov/dnsstamps"
 	"github.com/holandyoung/dnsproxy/dnscrypt"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,7 +84,7 @@ func checkDNSCryptProxy(tb testing.TB, proto dnscrypt.Proto, stamp dnsstamps.Ser
 
 	// Send the test message.
 	msg := newTestMessage()
-	reply, err := c.ExchangeContext(ctx, msg, ri)
+	reply, err := c.ExchangeContext(ctx, msg, ri, nil)
 	require.NoError(tb, err)
 	requireResponse(tb, msg, reply)
 }

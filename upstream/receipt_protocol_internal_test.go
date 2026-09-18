@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/holandyoung/quic-go"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,16 +48,16 @@ func TestReceiptAcrossConcurrentNativeProtocols(t *testing.T) {
 						original := req.Copy()
 						started := time.Now()
 						state := NewExchangeState(started.Add(3 * time.Second))
-						response, err := u.Exchange(req, state)
-						if err == nil {
+						response, exchangeErr := u.Exchange(req, state)
+						if exchangeErr == nil {
 							result, ready := state.Result()
 							if !ready || result.Err != nil || result.Response == nil || result.ReceivedAt.Before(started) || result.ReceivedAt.After(time.Now()) {
-								err = fmt.Errorf("invalid receipt: ready=%v result=%+v", ready, result)
+								exchangeErr = fmt.Errorf("invalid receipt: ready=%v result=%+v", ready, result)
 							} else if result.Response.Id != original.Id || result.Response.Question[0] != original.Question[0] || response.Id != original.Id || req.Id != original.Id {
-								err = fmt.Errorf("receipt or request crossed calls: request=%v result=%v", original, result.Response)
+								exchangeErr = fmt.Errorf("receipt or request crossed calls: request=%v result=%v", original, result.Response)
 							}
 						}
-						done <- err
+						done <- exchangeErr
 					}()
 				}
 				for range 12 {
@@ -82,25 +82,25 @@ func TestReceiptDoQRequiresCompleteFrameAndFIN(t *testing.T) {
 			serverDone := make(chan error, 1)
 			go func() {
 				serverDone <- func() error {
-					conn, err := listener.Accept(ctx)
-					if err != nil {
-						return err
+					conn, acceptErr := listener.Accept(ctx)
+					if acceptErr != nil {
+						return acceptErr
 					}
-					defer conn.CloseWithError(0, "")
-					stream, err := conn.AcceptStream(ctx)
-					if err != nil {
-						return err
+					defer func(connection *quic.Conn) { _ = connection.CloseWithError(0, "") }(conn)
+					stream, acceptErr := conn.AcceptStream(ctx)
+					if acceptErr != nil {
+						return acceptErr
 					}
-					wire, err := io.ReadAll(stream)
-					if err != nil {
-						return err
+					wire, acceptErr := io.ReadAll(stream)
+					if acceptErr != nil {
+						return acceptErr
 					}
 					if len(wire) < 2 || int(binary.BigEndian.Uint16(wire)) != len(wire)-2 {
 						return fmt.Errorf("invalid request framing")
 					}
 					req := new(dns.Msg)
-					if err = req.Unpack(wire[2:]); err != nil {
-						return err
+					if acceptErr = req.Unpack(wire[2:]); acceptErr != nil {
+						return acceptErr
 					}
 					if req.Id != 0 {
 						return fmt.Errorf("nonzero DoQ wire ID")
@@ -109,9 +109,9 @@ func TestReceiptDoQRequiresCompleteFrameAndFIN(t *testing.T) {
 					if mode == "wrong ID" {
 						response.Id = 9
 					}
-					body, err := response.Pack()
-					if err != nil {
-						return err
+					body, acceptErr := response.Pack()
+					if acceptErr != nil {
+						return acceptErr
 					}
 					frame := make([]byte, 2+len(body))
 					binary.BigEndian.PutUint16(frame, uint16(len(body)))
@@ -119,8 +119,8 @@ func TestReceiptDoQRequiresCompleteFrameAndFIN(t *testing.T) {
 					if mode == "extra byte" {
 						frame = append(frame, 0x42)
 					}
-					if _, err = stream.Write(frame); err != nil {
-						return err
+					if _, acceptErr = stream.Write(frame); acceptErr != nil {
+						return acceptErr
 					}
 					close(sent)
 					if mode == "delayed FIN" {
@@ -144,8 +144,8 @@ func TestReceiptDoQRequiresCompleteFrameAndFIN(t *testing.T) {
 			defer func() {
 				close(release)
 				select {
-				case err := <-serverDone:
-					require.NoError(t, err)
+				case serverErr := <-serverDone:
+					require.NoError(t, serverErr)
 				case <-ctx.Done():
 					t.Error("DoQ peer did not join")
 				}
@@ -155,7 +155,7 @@ func TestReceiptDoQRequiresCompleteFrameAndFIN(t *testing.T) {
 			t.Cleanup(func() { require.NoError(t, u.Close()) })
 			state := NewExchangeState(time.Now().Add(2 * time.Second))
 			finished := make(chan error, 1)
-			go func() { _, err := u.Exchange(createTestMessage(), state); finished <- err }()
+			go func() { _, exchangeErr := u.Exchange(createTestMessage(), state); finished <- exchangeErr }()
 			select {
 			case <-sent:
 			case <-ctx.Done():

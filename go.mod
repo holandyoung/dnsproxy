@@ -4,12 +4,12 @@ go 1.27.1
 
 require (
 	github.com/AdguardTeam/golibs v0.35.13
-	github.com/ameshkov/dnsstamps v1.0.3
 	github.com/beefsack/go-rate v0.0.0-20220214233405-116f4ca011a0
 	github.com/bluele/gcache v0.0.2
+	github.com/holandyoung/quic-go v0.0.0-20260918164653-a96930ec0346
+	github.com/jedisct1/go-dnsstamps v0.0.0-20260518121737-6579dc73e4a2
 	github.com/miekg/dns v1.1.72
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/quic-go/quic-go v0.60.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
@@ -31,12 +31,9 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
-	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/golangci/misspell v0.8.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/renameio/v2 v2.0.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/google/yamlfmt v0.21.0 // indirect
@@ -46,7 +43,6 @@ require (
 	github.com/gordonklaus/ineffassign v0.2.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
-	github.com/jstemmer/go-junit-report/v2 v2.1.0 // indirect
 	github.com/kisielk/errcheck v1.20.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/openai/openai-go/v3 v3.42.0 // indirect
@@ -62,7 +58,6 @@ require (
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/uudashr/gocognit v1.2.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
@@ -77,7 +72,6 @@ require (
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260710170516-c325552849a7 // indirect
-	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	golang.org/x/vuln v1.6.0 // indirect
@@ -86,10 +80,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260713224248-f5fc221cf8c4 // indirect
 	google.golang.org/grpc v1.82.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	honnef.co/go/tools v0.7.0 // indirect
-	mvdan.cc/editorconfig v0.3.0 // indirect
-	mvdan.cc/gofumpt v0.10.0 // indirect
-	mvdan.cc/sh/v3 v3.13.1 // indirect
+	honnef.co/go/tools v0.8.1 // indirect
 	mvdan.cc/unparam v0.0.0-20251027182757-5beb8c8f8f15 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
@@ -102,20 +93,14 @@ ignore (
 )
 
 tool (
-	github.com/fzipp/gocyclo/cmd/gocyclo
-	github.com/golangci/misspell/cmd/misspell
 	github.com/google/yamlfmt/cmd/yamlfmt
 	github.com/gordonklaus/ineffassign
-	github.com/jstemmer/go-junit-report/v2
 	github.com/kisielk/errcheck
 	github.com/securego/gosec/v2/cmd/gosec
-	github.com/uudashr/gocognit/cmd/gocognit
 	golang.org/x/tools/go/analysis/passes/fieldalignment/cmd/fieldalignment
 	golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness
 	golang.org/x/tools/go/analysis/passes/shadow/cmd/shadow
 	golang.org/x/vuln/cmd/govulncheck
 	honnef.co/go/tools/cmd/staticcheck
-	mvdan.cc/gofumpt
-	mvdan.cc/sh/v3/cmd/shfmt
 	mvdan.cc/unparam
 )

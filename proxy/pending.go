@@ -66,8 +66,11 @@ func (pr *defaultPendingRequests) queue(
 ) (loaded bool, err error) {
 	var key []byte
 	if dctx.ReqECS != nil {
-		ones, _ := dctx.ReqECS.Mask.Size()
-		key = msgToKeyWithSubnet(dctx.Req, dctx.ReqECS.IP, ones)
+		ip, ones, valid := cacheSubnet(dctx.ReqECS)
+		if !valid {
+			return false, nil
+		}
+		key = msgToKeyWithSubnet(dctx.Req, ip, ones)
 	} else {
 		key = msgToKey(dctx.Req)
 	}
@@ -101,8 +104,11 @@ func (pr *defaultPendingRequests) queue(
 func (pr *defaultPendingRequests) done(ctx context.Context, dctx *DNSContext, err error) {
 	var key []byte
 	if dctx.ReqECS != nil {
-		ones, _ := dctx.ReqECS.Mask.Size()
-		key = msgToKeyWithSubnet(dctx.Req, dctx.ReqECS.IP, ones)
+		ip, ones, valid := cacheSubnet(dctx.ReqECS)
+		if !valid {
+			return
+		}
+		key = msgToKeyWithSubnet(dctx.Req, ip, ones)
 	} else {
 		key = msgToKey(dctx.Req)
 	}

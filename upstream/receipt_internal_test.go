@@ -138,9 +138,9 @@ func (c *receiptCloseConn) Close() error {
 }
 
 type receiptCloseRoute struct {
-	address string
 	closing chan struct{}
 	release <-chan struct{}
+	address string
 }
 
 func (r *receiptCloseRoute) DialContext(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -172,7 +172,7 @@ func TestReceiptPublishedBeforeRealConnectionCleanup(t *testing.T) {
 			t.Cleanup(func() { require.NoError(t, u.Close()) })
 			state := NewExchangeState(time.Now().Add(time.Second))
 			finished := make(chan error, 1)
-			go func() { _, err := u.Exchange(createTestMessage(), state); finished <- err }()
+			go func() { _, exchangeErr := u.Exchange(createTestMessage(), state); finished <- exchangeErr }()
 			select {
 			case <-route.closing:
 			case <-time.After(2 * time.Second):
@@ -184,15 +184,15 @@ func TestReceiptPublishedBeforeRealConnectionCleanup(t *testing.T) {
 			require.NotEmpty(t, result.Response.Answer)
 			require.True(t, result.ReceivedAt.Before(state.deadline))
 			select {
-			case err := <-finished:
-				t.Fatalf("cleanup prerequisite ended early: %v", err)
+			case resultErr := <-finished:
+				t.Fatalf("cleanup prerequisite ended early: %v", resultErr)
 			case <-time.After(time.Until(state.deadline)):
 			}
 			state.Expire()
 			unblock()
 			select {
-			case err := <-finished:
-				require.NoError(t, err)
+			case resultErr := <-finished:
+				require.NoError(t, resultErr)
 			case <-time.After(time.Second):
 				t.Fatal("exchange did not finish after cleanup release")
 			}

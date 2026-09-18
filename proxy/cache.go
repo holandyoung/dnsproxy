@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"log/slog"
 	"math"
 	"net"
@@ -13,6 +14,7 @@ import (
 
 	glcache "github.com/AdguardTeam/golibs/cache"
 	"github.com/AdguardTeam/golibs/mathutil"
+	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/holandyoung/dnsproxy/upstream"
 	"github.com/miekg/dns"
 )
@@ -81,24 +83,32 @@ const (
 	// length of packed DNS message.  It's essentially the size of a uint16.
 	packedMsgLenSz = 2
 	// expTimeSz is the exact length of byte slice capable to store the
-	// expiration time the response.  It's essentially the size of a uint32.
-	expTimeSz = 4
+	// expiration time of the response, as signed 64-bit Unix seconds.
+	expTimeSz = 8
 
 	// minPackedLen is the minimum length of the packed cacheItem.
 	minPackedLen = expTimeSz + packedMsgLenSz
 )
 
 // pack converts the ci into bytes slice.
-func (ci *cacheItem) pack() (packed []byte) {
-	pm, _ := ci.m.Pack()
+func (ci *cacheItem) pack() (packed []byte, err error) {
+	pm, err := ci.m.Pack()
+	if err != nil {
+		return nil, fmt.Errorf("packing cached DNS message: %w", err)
+	}
 	pmLen := len(pm)
+	prefix, err := proxyutil.LengthPrefix(pmLen)
+	if err != nil {
+		return nil, err
+	}
 	packed = make([]byte, minPackedLen, minPackedLen+pmLen+len(ci.u))
 
 	// Put expiration time.
-	binary.BigEndian.PutUint32(packed, uint32(time.Now().Unix())+ci.ttl)
+	// #nosec G115 -- Encode a signed 64-bit Unix timestamp as its 64-bit bit pattern.
+	binary.BigEndian.PutUint64(packed, uint64(time.Now().Unix()+int64(ci.ttl)))
 
 	// Put the length of the packed message.
-	binary.BigEndian.PutUint16(packed[expTimeSz:], uint16(pmLen))
+	copy(packed[expTimeSz:], prefix[:])
 
 	// Put the packed message itself.
 	packed = append(packed, pm...)
@@ -106,7 +116,7 @@ func (ci *cacheItem) pack() (packed []byte) {
 	// Put the address of the upstream.
 	packed = append(packed, ci.u...)
 
-	return packed
+	return packed, nil
 }
 
 // unpackItem converts the data into cacheItem using req as a request message.
@@ -119,7 +129,8 @@ func (c *cache) unpackItem(data []byte, req *dns.Msg) (ci *cacheItem, expired bo
 	}
 
 	b := bytes.NewBuffer(data)
-	expire := time.Unix(int64(binary.BigEndian.Uint32(b.Next(expTimeSz))), 0)
+	// #nosec G115 -- Restore the signed Unix seconds written by cacheItem.pack.
+	expire := time.Unix(int64(binary.BigEndian.Uint64(b.Next(expTimeSz))), 0)
 	now := time.Now()
 	var ttl uint32
 	if expired = now.After(expire); expired {
@@ -130,7 +141,16 @@ func (c *cache) unpackItem(data []byte, req *dns.Msg) (ci *cacheItem, expired bo
 
 		ttl = uint32(c.optimisticTTL.Seconds())
 	} else {
-		ttl = uint32(expire.Unix() - now.Unix())
+		seconds := expire.Unix() - now.Unix()
+		// DNS TTLs remain uint32 even if a clock adjustment extends lifetime.
+		switch {
+		case seconds < 0:
+			ttl = 0
+		case seconds > math.MaxUint32:
+			ttl = math.MaxUint32
+		default:
+			ttl = uint32(seconds)
+		}
 	}
 
 	l := int(binary.BigEndian.Uint16(b.Next(packedMsgLenSz)))
@@ -260,9 +280,11 @@ func (c *cache) getWithSubnet(req *dns.Msg, n *net.IPNet) (ci *cacheItem, expire
 		return nil, false, nil
 	}
 
-	ecsIP := n.IP.Mask(n.Mask)
+	ecsIP, m, valid := cacheSubnet(n)
+	if !valid {
+		return nil, false, nil
+	}
 	ipLen := len(ecsIP)
-	m, _ := n.Mask.Size()
 
 	k = msgToKeyWithSubnet(req, ecsIP, m)
 	data := c.itemsWithSubnet.Get(k)
@@ -270,9 +292,10 @@ func (c *cache) getWithSubnet(req *dns.Msg, n *net.IPNet) (ci *cacheItem, expire
 	// In order to reduce allocations we apply mask on bits level.  As the key
 	// k has ecsIP in bytes slice representation, each iteration we can just
 	// clear one bit in the end of it by applying the bitmask.
-	for bitmask := ^byte(0); m >= 0 && data == nil; m-- {
+	for m > 0 && data == nil {
+		m--
 		// Set mask identification byte in the key.
-		k[keyMaskIndex] = byte(m)
+		k[keyMaskIndex] = m
 
 		// In case mask is zero, the key doesn't have IP in it.
 		if m == 0 {
@@ -282,15 +305,8 @@ func (c *cache) getWithSubnet(req *dns.Msg, n *net.IPNet) (ci *cacheItem, expire
 			continue
 		}
 
-		// Shift or renew bitmask.
-		if m%8 == 0 {
-			bitmask = ^byte(0)
-		} else {
-			bitmask <<= 1
-		}
-
-		// Clear the last non-zero bit in the byte of the IP address.
-		k[keyIPIndex+m/8] &= bitmask
+		// Moving from /m+1 to /m clears exactly the last network bit.
+		k[keyIPIndex+int(m)/8] &^= 1 << (7 - m%8)
 
 		data = c.itemsWithSubnet.Get(k)
 	}
@@ -335,7 +351,11 @@ func (c *cache) set(req, m *dns.Msg, u upstream.Upstream, l *slog.Logger) {
 	}
 
 	key := msgToKey(req)
-	packed := item.pack()
+	packed, err := item.pack()
+	if err != nil {
+		l.Warn("not caching invalid DNS response", "error", err)
+		return
+	}
 
 	c.itemsLock.Lock()
 	defer c.itemsLock.Unlock()
@@ -352,9 +372,17 @@ func (c *cache) setWithSubnet(req, m *dns.Msg, u upstream.Upstream, n *net.IPNet
 		return
 	}
 
-	pref, _ := n.Mask.Size()
-	key := msgToKeyWithSubnet(req, n.IP.Mask(n.Mask), pref)
-	packed := item.pack()
+	ip, pref, valid := cacheSubnet(n)
+	if !valid {
+		l.Warn("not caching response with invalid subnet")
+		return
+	}
+	key := msgToKeyWithSubnet(req, ip, pref)
+	packed, err := item.pack()
+	if err != nil {
+		l.Warn("not caching invalid DNS response", "error", err)
+		return
+	}
 
 	c.itemsWithSubnetLock.Lock()
 	defer c.itemsWithSubnetLock.Unlock()
@@ -559,10 +587,38 @@ const (
 	keyIPIndex = keyMaskIndex + 1
 )
 
+// cacheSubnet owns validation and canonicalization for subnet cache keys.
+// A nil mask explicitly denotes the global entry. Invalid masks must never
+// collide with that entry.
+func cacheSubnet(n *net.IPNet) (ip net.IP, prefix uint8, valid bool) {
+	if n == nil {
+		return nil, 0, false
+	}
+	if n.Mask == nil {
+		return nil, 0, n.IP == nil || n.IP.To16() != nil
+	}
+	ones, bits := n.Mask.Size()
+	switch bits {
+	case 32:
+		ip = n.IP.To4()
+	case 128:
+		if n.IP.To4() != nil {
+			return nil, 0, false
+		}
+		ip = n.IP.To16()
+	default:
+		return nil, 0, false
+	}
+	if ip == nil || ones < 0 || ones > 128 {
+		return nil, 0, false
+	}
+	return ip.Mask(n.Mask), uint8(ones), true
+}
+
 // msgToKeyWithSubnet constructs the cache key from DO bit, type, class, subnet
 // mask, client's IP address and question's name of m.  ecsIP is expected to be
 // masked already.
-func msgToKeyWithSubnet(m *dns.Msg, ecsIP net.IP, mask int) (key []byte) {
+func msgToKeyWithSubnet(m *dns.Msg, ecsIP net.IP, mask uint8) (key []byte) {
 	q := m.Question[0]
 	keyLen := keyIPIndex + len(q.Name)
 	masked := mask != 0
@@ -584,7 +640,7 @@ func msgToKeyWithSubnet(m *dns.Msg, ecsIP net.IP, mask int) (key []byte) {
 	binary.BigEndian.PutUint16(key[1+packedMsgLenSz:], q.Qclass)
 
 	// Add mask.
-	key[keyMaskIndex] = uint8(mask)
+	key[keyMaskIndex] = mask
 	k := keyIPIndex
 	if masked {
 		k += copy(key[keyIPIndex:], ecsIP)

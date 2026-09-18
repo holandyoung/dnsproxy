@@ -12,8 +12,8 @@ import (
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
-	"github.com/ameshkov/dnsstamps"
 	"github.com/holandyoung/dnsproxy/dnscrypt/internal/dnscrypttest"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -316,6 +316,6 @@ func TestClient_ExchangeContext_validateNonce(t *testing.T) {
 
 	wantErrMsg := "exchanging: decrypting response: decrypting server response: " +
 		ErrUnexpectedNonce.Error()
-	_, err = client.ExchangeContext(ctx, msg, info)
+	_, err = client.ExchangeContext(ctx, msg, info, nil)
 	testutil.AssertErrorMsg(t, wantErrMsg, err)
 }

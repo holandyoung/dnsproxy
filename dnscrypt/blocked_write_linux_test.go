@@ -41,20 +41,20 @@ func TestServer_ShutdownClosesBlockedCertificateWrite(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		if err := s.Shutdown(ctx); !errors.Is(err, ErrServerNotStarted) {
-			require.NoError(t, err)
+		if shutdownErr := s.Shutdown(ctx); !errors.Is(shutdownErr, ErrServerNotStarted) {
+			require.NoError(t, shutdownErr)
 		}
 	})
 	// Advertise a small receive window in the handshake itself. Reducing it
 	// after Connect can leave the initial large window available to the peer.
 	dialer := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error {
 		var setErr error
-		err := raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, 1024) })
-		return errors.Join(err, setErr)
+		controlErr := raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, 1024) })
+		return errors.Join(controlErr, setErr)
 	}}
 	c, err := dialer.Dial("tcp", s.LocalAddr().String())
 	require.NoError(t, err)
-	defer c.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(c.Close)
 	tcp := c.(*net.TCPConn)
 	require.NoError(t, tcp.SetWriteDeadline(time.Now().Add(3*time.Second)))
 	// Establish native acceptance before changing only this fixture's physical
@@ -86,8 +86,8 @@ func TestServer_ShutdownClosesBlockedCertificateWrite(t *testing.T) {
 	require.EventuallyWithT(t, func(check *assert.CollectT) {
 		var info *unix.TCPInfo
 		var infoErr error
-		err := raw.Control(func(fd uintptr) { info, infoErr = unix.GetsockoptTCPInfo(int(fd), unix.SOL_TCP, unix.TCP_INFO) })
-		require.NoError(check, err)
+		controlErr := raw.Control(func(fd uintptr) { info, infoErr = unix.GetsockoptTCPInfo(int(fd), unix.SOL_TCP, unix.TCP_INFO) })
+		require.NoError(check, controlErr)
 		require.NoError(check, infoErr)
 		require.Zero(check, info.Snd_wnd)
 		require.True(check, blockedCertificateWrite())

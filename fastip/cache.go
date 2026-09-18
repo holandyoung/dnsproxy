@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"net/netip"
 	"time"
+
+	"github.com/AdguardTeam/golibs/mathutil"
 )
 
 const (
@@ -12,54 +14,44 @@ const (
 )
 
 // cacheEntry represents an item that will be stored in the cache.
-//
-// TODO(e.burkov): Rewrite the cache using zero-values instead of storing
-// useless boolean as an integer.
 type cacheEntry struct {
-	// status is 1 if the item is timed out.
-	status      int
-	latencyMsec uint
+	latencyMsec int64
+	failed      bool
 }
 
 // packCacheEntry packs the cache entry and the TTL to bytes in the following
 // order:
 //
-//   - expire   [4]byte  (Unix time, seconds),
+//   - expire   [8]byte  (signed Unix time, seconds),
 //   - status   byte     (0 for ok, 1 for timed out),
-//   - latency  [2]byte  (milliseconds).
-func packCacheEntry(ent *cacheEntry, ttl uint32) (d []byte) {
-	expire := uint32(time.Now().Unix()) + ttl
-
-	d = make([]byte, 4+1+2)
-	binary.BigEndian.PutUint32(d, expire)
-	i := 4
-
-	d[i] = byte(ent.status)
-	i++
-
-	binary.BigEndian.PutUint16(d[i:], uint16(ent.latencyMsec))
-	// i += 2
+//   - latency  [8]byte  (signed milliseconds).
+func packCacheEntry(ent *cacheEntry, ttl uint32, now int64) (d []byte) {
+	expire := now + int64(ttl)
+	d = make([]byte, 8+1+8)
+	// #nosec G115 -- Preserve all bits of signed Unix seconds for the inverse decoder.
+	binary.BigEndian.PutUint64(d, uint64(expire))
+	d[8] = mathutil.BoolToNumber[byte](ent.failed)
+	// #nosec G115 -- Preserve all bits of signed milliseconds for the inverse decoder.
+	binary.BigEndian.PutUint64(d[9:], uint64(ent.latencyMsec))
 
 	return d
 }
 
 // unpackCacheEntry unpacks bytes to cache entry and checks TTL, if the record
 // is expired returns nil.
-func unpackCacheEntry(data []byte) (ent *cacheEntry) {
-	now := time.Now().Unix()
-	expire := binary.BigEndian.Uint32(data[:4])
-	if int64(expire) <= now {
+func unpackCacheEntry(data []byte, now int64) (ent *cacheEntry) {
+	if len(data) != 17 || data[8] > 1 {
+		return nil
+	}
+	// #nosec G115 -- Restore the signed 64-bit bit pattern written by packCacheEntry.
+	expire := int64(binary.BigEndian.Uint64(data[:8]))
+	if expire <= now {
 		return nil
 	}
 
-	ent = &cacheEntry{}
-	i := 4
-
-	ent.status = int(data[i])
-	i++
-
-	ent.latencyMsec = uint(binary.BigEndian.Uint16(data[i:]))
-	// i += 2
+	// #nosec G115 -- Restore the signed 64-bit latency written by packCacheEntry.
+	latency := int64(binary.BigEndian.Uint64(data[9:]))
+	ent = &cacheEntry{failed: data[8] == 1, latencyMsec: latency}
 
 	return ent
 }
@@ -72,13 +64,13 @@ func (f *FastestAddr) cacheFind(ip netip.Addr) (ent *cacheEntry) {
 		return nil
 	}
 
-	return unpackCacheEntry(val)
+	return unpackCacheEntry(val, time.Now().Unix())
 }
 
 // cacheAddFailure stores unsuccessful attempt in cache.
 func (f *FastestAddr) cacheAddFailure(ip netip.Addr) {
 	ent := cacheEntry{
-		status: 1,
+		failed: true,
 	}
 
 	f.ipCacheLock.Lock()
@@ -91,7 +83,7 @@ func (f *FastestAddr) cacheAddFailure(ip netip.Addr) {
 
 // cacheAddSuccessful stores a successful ping result in the cache.  Replaces
 // previous result if our latency is lower.
-func (f *FastestAddr) cacheAddSuccessful(ip netip.Addr, latency uint) {
+func (f *FastestAddr) cacheAddSuccessful(ip netip.Addr, latency int64) {
 	ent := cacheEntry{
 		latencyMsec: latency,
 	}
@@ -100,13 +92,13 @@ func (f *FastestAddr) cacheAddSuccessful(ip netip.Addr, latency uint) {
 	defer f.ipCacheLock.Unlock()
 
 	entCached := f.cacheFind(ip)
-	if entCached == nil || entCached.status != 0 || entCached.latencyMsec > latency {
+	if entCached == nil || entCached.failed || entCached.latencyMsec > latency {
 		f.cacheAdd(&ent, ip, fastestAddrCacheTTLSec)
 	}
 }
 
 // cacheAdd adds a new entry to the cache.
 func (f *FastestAddr) cacheAdd(ent *cacheEntry, ip netip.Addr, ttl uint32) {
-	val := packCacheEntry(ent, ttl)
+	val := packCacheEntry(ent, ttl, time.Now().Unix())
 	f.ipCache.Set(ip.AsSlice(), val)
 }

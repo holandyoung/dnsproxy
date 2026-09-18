@@ -65,7 +65,7 @@ func TestStartFailureReleasesEveryBoundListener(t *testing.T) {
 			case "dnscrypt_start":
 				blocker, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(localhostAnyPort))
 				require.NoError(t, err)
-				defer blocker.Close()
+				defer func(closeResource func() error) { _ = closeResource() }(blocker.Close)
 				resolver, err := dnscrypt.GenerateResolverConfig("example.org", nil, 0)
 				require.NoError(t, err)
 				conf.DNSCryptResolverCert, err = resolver.NewCert()
@@ -116,7 +116,7 @@ func TestShutdownClosesAcceptedStreamAtEveryReadBoundary(t *testing.T) {
 				}
 				conn, err := client.Dial(p.Addr(proto).String())
 				require.NoError(t, err)
-				defer conn.Close()
+				defer func(closeResource func() error) { _ = closeResource() }(conn.Close)
 				_, _, err = client.ExchangeWithConn(newTestMessage(), conn)
 				require.NoError(t, err, "a response proves that the connection was accepted")
 				if len(partial) > 0 {
@@ -161,7 +161,7 @@ func TestStreamAcceptsSplitLengthPrefix(t *testing.T) {
 			}
 			conn, err := client.Dial(p.Addr(proto).String())
 			require.NoError(t, err)
-			defer conn.Close()
+			defer func(closeResource func() error) { _ = closeResource() }(conn.Close)
 			_, _, err = client.ExchangeWithConn(newTestMessage(), conn)
 			require.NoError(t, err)
 			query := newTestMessage()

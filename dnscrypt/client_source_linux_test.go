@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ameshkov/dnsstamps"
 	"github.com/holandyoung/dnsproxy/dnscrypt"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/require"
 )
@@ -55,7 +55,7 @@ func TestClient_LocalSourceOwnsCertificateAndEncryptedQuery(t *testing.T) {
 			}), protocol)
 			info, err := client.DialStampContext(ctx, *newTestServerStamp(s, key))
 			require.NoError(t, err)
-			reply, err := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info)
+			reply, err := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info, nil)
 			require.NoError(t, err)
 			require.Len(t, reply.Answer, 1)
 			require.Equal(t, "127.0.0.2", <-seen, "encrypted query must use same configured local source")

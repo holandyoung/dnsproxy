@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ameshkov/dnsstamps"
 	"github.com/holandyoung/dnsproxy/dnscrypt"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/require"
 )
@@ -25,39 +25,39 @@ func TestClient_CertificateCancellationClosesRealSocket(t *testing.T) {
 				var err error
 				packet, err = net.ListenPacket("udp4", "127.0.0.1:0")
 				require.NoError(t, err)
-				defer packet.Close()
+				defer func(closeResource func() error) { _ = closeResource() }(packet.Close)
 				address = packet.LocalAddr().String()
 				go func() {
 					b := make([]byte, 4096)
-					_, peer, err := packet.ReadFrom(b)
-					if err == nil {
+					_, peer, readErr := packet.ReadFrom(b)
+					if readErr == nil {
 						received <- peer
 					}
-					peerDone <- err
+					peerDone <- readErr
 				}()
 			} else {
 				var err error
 				listener, err = net.Listen("tcp4", "127.0.0.1:0")
 				require.NoError(t, err)
-				defer listener.Close()
+				defer func(closeResource func() error) { _ = closeResource() }(listener.Close)
 				address = listener.Addr().String()
 				go func() {
-					c, err := listener.Accept()
-					if err != nil {
-						peerDone <- err
+					c, acceptErr := listener.Accept()
+					if acceptErr != nil {
+						peerDone <- acceptErr
 						return
 					}
-					defer c.Close()
+					defer func(closeResource func() error) { _ = closeResource() }(c.Close)
 					_ = c.SetDeadline(time.Now().Add(2 * time.Second))
-					_, err = (&dns.Conn{Conn: c}).ReadMsg()
-					if err != nil {
-						peerDone <- err
+					_, acceptErr = (&dns.Conn{Conn: c}).ReadMsg()
+					if acceptErr != nil {
+						peerDone <- acceptErr
 						return
 					}
 					received <- c.RemoteAddr()
 					var b [1]byte
-					_, err = c.Read(b[:])
-					peerDone <- err
+					_, acceptErr = c.Read(b[:])
+					peerDone <- acceptErr
 				}()
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
@@ -124,8 +124,8 @@ func TestClient_EncryptedCancellationClosesRealSocket(t *testing.T) {
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				_, err := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info)
-				done <- err
+				_, exchangeErr := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info, nil)
+				done <- exchangeErr
 			}()
 			select {
 			case <-entered:
@@ -134,8 +134,8 @@ func TestClient_EncryptedCancellationClosesRealSocket(t *testing.T) {
 			}
 			cancel()
 			select {
-			case err := <-done:
-				require.Error(t, err)
+			case resultErr := <-done:
+				require.Error(t, resultErr)
 			case <-time.After(300 * time.Millisecond):
 				t.Fatal("canceled encrypted exchange retained its socket")
 			}

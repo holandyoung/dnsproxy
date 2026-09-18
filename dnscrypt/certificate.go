@@ -134,12 +134,15 @@ func (c *Certificate) UnmarshalBinary(b []byte) (err error) {
 
 // VerifyDate checks that the cert is valid at this moment.
 func (c *Certificate) VerifyDate() (ok bool) {
+	return c.verifyDate(time.Now().Unix())
+}
+
+func (c *Certificate) verifyDate(now int64) (ok bool) {
 	if c.NotBefore >= c.NotAfter {
 		return false
 	}
 
-	now := uint32(time.Now().Unix())
-	if now > c.NotAfter || now < c.NotBefore {
+	if now > int64(c.NotAfter) || now < int64(c.NotBefore) {
 		return false
 	}
 

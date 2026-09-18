@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/holandyoung/quic-go"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -63,8 +63,8 @@ func receiptDoQPeer(t *testing.T, mode string) (Upstream, *atomic.Int32) {
 	go func() {
 		defer close(listenerDone)
 		for {
-			conn, err := listener.Accept(ctx)
-			if err != nil {
+			conn, acceptErr := listener.Accept(ctx)
+			if acceptErr != nil {
 				return
 			}
 			connections.Add(1)
@@ -72,18 +72,18 @@ func receiptDoQPeer(t *testing.T, mode string) (Upstream, *atomic.Int32) {
 				defer connections.Done()
 				stop := context.AfterFunc(ctx, func() { _ = conn.CloseWithError(0, "") })
 				defer stop()
-				defer conn.CloseWithError(0, "")
+				defer func(connection *quic.Conn) { _ = connection.CloseWithError(0, "") }(conn)
 				for {
-					stream, err := conn.AcceptStream(ctx)
-					if err != nil {
+					stream, streamErr := conn.AcceptStream(ctx)
+					if streamErr != nil {
 						return
 					}
-					wire, err := io.ReadAll(stream)
-					if err != nil || len(wire) < 2 || int(binary.BigEndian.Uint16(wire)) != len(wire)-2 {
+					wire, streamErr := io.ReadAll(stream)
+					if streamErr != nil || len(wire) < 2 || int(binary.BigEndian.Uint16(wire)) != len(wire)-2 {
 						return
 					}
 					req := new(dns.Msg)
-					if err = req.Unpack(wire[2:]); err != nil {
+					if streamErr = req.Unpack(wire[2:]); streamErr != nil {
 						return
 					}
 					response := respondToTestMessage(req)
@@ -98,8 +98,8 @@ func receiptDoQPeer(t *testing.T, mode string) (Upstream, *atomic.Int32) {
 					if bad && mode == "wrong question" {
 						response.Question[0].Name = "different.example."
 					}
-					body, err := response.Pack()
-					if err != nil {
+					body, streamErr := response.Pack()
+					if streamErr != nil {
 						return
 					}
 					if bad && mode == "malformed" {
@@ -124,7 +124,7 @@ func receiptDoQPeer(t *testing.T, mode string) (Upstream, *atomic.Int32) {
 							frame = append(frame, frame...)
 						}
 					}
-					if _, err = stream.Write(frame); err != nil {
+					if _, streamErr = stream.Write(frame); streamErr != nil {
 						return
 					}
 					if bad && mode == "missing FIN" {

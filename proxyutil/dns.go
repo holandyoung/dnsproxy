@@ -4,18 +4,21 @@ package proxyutil
 
 import (
 	"encoding/binary"
+	"fmt"
+	"math"
 	"net/netip"
 
 	"github.com/miekg/dns"
 )
 
-// AddPrefix adds a 2-byte prefix with the DNS message length.
-func AddPrefix(b []byte) (m []byte) {
-	m = make([]byte, 2+len(b))
-	binary.BigEndian.PutUint16(m, uint16(len(b)))
-	copy(m[2:], b)
-
-	return m
+// LengthPrefix validates a DNS stream frame size before encoding its two-byte
+// length. Callers must validate before publishing a frame or opening a stream.
+func LengthPrefix(size int) (prefix [2]byte, err error) {
+	if size < 0 || size > math.MaxUint16 {
+		return prefix, fmt.Errorf("DNS frame length %d is outside 0..65535", size)
+	}
+	binary.BigEndian.PutUint16(prefix[:], uint16(size))
+	return prefix, nil
 }
 
 // IPFromRR returns the IP address from rr if any.

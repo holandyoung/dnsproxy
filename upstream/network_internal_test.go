@@ -20,8 +20,8 @@ import (
 // must work through net.PacketConn without native type assertions or redialing.
 type routedPacket struct {
 	net.PacketConn
-	once sync.Once
 	done chan struct{}
+	once sync.Once
 }
 
 func (p *routedPacket) Close() (err error) {
@@ -30,13 +30,13 @@ func (p *routedPacket) Close() (err error) {
 }
 
 type routedNetwork struct {
-	mu         sync.Mutex
+	tcpError   error
 	address    string
 	packets    []*routedPacket
 	streams    []net.Conn
 	configured []string
 	networks   []string
-	tcpError   error
+	mu         sync.Mutex
 }
 
 func (r *routedNetwork) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -135,7 +135,7 @@ func TestNetworkDialerFailureCannotFallBackToNativeDialing(t *testing.T) {
 		t.Run(address, func(t *testing.T) {
 			u, err := AddressToUpstream(address, &Options{NetworkDialer: rejectingNetwork{routeFailure}, Timeout: time.Second, Logger: testLogger})
 			require.NoError(t, err)
-			defer u.Close()
+			defer func(closeResource func() error) { _ = closeResource() }(u.Close)
 			response, err := u.Exchange(createTestMessage(), nil)
 			require.ErrorIs(t, err, routeFailure)
 			require.Nil(t, response)
@@ -143,7 +143,7 @@ func TestNetworkDialerFailureCannotFallBackToNativeDialing(t *testing.T) {
 	}
 	r, err := NewUpstreamResolver("127.0.0.1:1", &Options{NetworkDialer: rejectingNetwork{routeFailure}, Timeout: time.Second, Logger: testLogger})
 	require.NoError(t, err)
-	defer r.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(r.Close)
 	_, err = r.LookupNetIP(context.Background(), "ip4", "route.test")
 	require.ErrorIs(t, err, routeFailure, "bootstrap construction must keep the same network owner")
 }
@@ -157,7 +157,7 @@ func TestNetworkDialerKeepsStrictServerNameVerification(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			u, err := AddressToUpstream("quic://127.0.0.1:1", &Options{NetworkDialer: &routedNetwork{address: srv.addr}, RootCAs: roots, ServerName: name, Timeout: time.Second, Logger: testLogger})
 			require.NoError(t, err)
-			defer u.Close()
+			defer func(closeResource func() error) { _ = closeResource() }(u.Close)
 			response, err := u.Exchange(createTestMessage(), nil)
 			if name == "route.example" {
 				require.NoError(t, err)

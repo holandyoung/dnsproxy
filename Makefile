@@ -48,12 +48,6 @@ ENV = env \
 
 # Keep the line above blank.
 
-ENV_MISC = env \
-	PATH="$${PWD}/bin:$$("$(GO.MACRO)" env GOPATH)/bin:$${PATH}" \
-	VERBOSE="$(VERBOSE.MACRO)" \
-
-# Keep the line above blank.
-
 # Keep this target first, so that a naked make invocation triggers a full build.
 .PHONY: build
 build: go-deps go-build
@@ -61,37 +55,15 @@ build: go-deps go-build
 .PHONY: init
 init: ; git config core.hooksPath ./scripts/hooks
 
-.PHONY: test
-test: go-test
+.PHONY: check
+check: ; sh scripts/check.sh
 
-.PHONY: go-bench go-build go-deps go-env go-lint go-test go-upd-tools
-go-bench:     ; $(ENV)          "$(SHELL)" ./scripts/make/go-bench.sh
-go-build:     ; $(ENV)          "$(SHELL)" ./scripts/make/go-build.sh
-go-deps:      ; $(ENV)          "$(SHELL)" ./scripts/make/go-deps.sh
-go-env:       ; $(ENV)          "$(GO.MACRO)" env
-go-lint:      ; $(ENV)          "$(SHELL)" ./scripts/make/go-lint.sh
-go-test:      ; $(ENV) RACE='1' "$(SHELL)" ./scripts/make/go-test.sh
-go-upd-tools: ; $(ENV)          "$(SHELL)" ./scripts/make/go-upd-tools.sh
-
-.PHONY: go-check
-go-check: go-lint go-test
-
-# A quick check to make sure that all operating systems relevant to the
-# development of the project can be typechecked and built successfully.
-.PHONY: go-os-check
-go-os-check:
-	$(ENV) GOOS='darwin'  "$(GO.MACRO)" vet ./...
-	$(ENV) GOOS='freebsd' "$(GO.MACRO)" vet ./...
-	$(ENV) GOOS='openbsd' "$(GO.MACRO)" vet ./...
-	$(ENV) GOOS='linux'   "$(GO.MACRO)" vet ./...
-	$(ENV) GOOS='windows' "$(GO.MACRO)" vet ./...
-
-.PHONY: txt-lint
-txt-lint: ; $(ENV) "$(SHELL)" ./scripts/make/txt-lint.sh
-
-.PHONY: md-lint sh-lint
-md-lint: ; $(ENV_MISC) "$(SHELL)" ./scripts/make/md-lint.sh
-sh-lint: ; $(ENV_MISC) "$(SHELL)" ./scripts/make/sh-lint.sh
+.PHONY: go-bench go-build go-deps go-env go-upd-tools
+go-bench:     ; $(ENV) "$(SHELL)" ./scripts/make/go-bench.sh
+go-build:     ; $(ENV) "$(SHELL)" ./scripts/make/go-build.sh
+go-deps:      ; $(ENV) "$(SHELL)" ./scripts/make/go-deps.sh
+go-env:       ; $(ENV) "$(GO.MACRO)" env
+go-upd-tools: ; $(ENV) "$(SHELL)" ./scripts/make/go-upd-tools.sh
 
 .PHONY: clean
 clean: ; $(ENV) $(GO.MACRO) clean && rm -f -r '$(DIST_DIR)'

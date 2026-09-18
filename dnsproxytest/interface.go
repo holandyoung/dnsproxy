@@ -6,9 +6,9 @@ import (
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/holandyoung/dnsproxy/proxy"
 	"github.com/holandyoung/dnsproxy/upstream"
+	"github.com/holandyoung/quic-go"
+	"github.com/holandyoung/quic-go/qlogwriter"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlogwriter"
 )
 
 // Upstream is a mock [upstream.Upstream] implementation for tests.

@@ -30,9 +30,9 @@ func lifecycleServer(t *testing.T) *dnscrypt.Server {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		err := s.Shutdown(ctx)
-		if !errors.Is(err, dnscrypt.ErrServerNotStarted) {
-			require.NoError(t, err)
+		shutdownErr := s.Shutdown(ctx)
+		if !errors.Is(shutdownErr, dnscrypt.ErrServerNotStarted) {
+			require.NoError(t, shutdownErr)
 		}
 	})
 	return s
@@ -53,7 +53,7 @@ func TestServer_TCPFragmentedPrefix(t *testing.T) {
 			s := lifecycleServer(t)
 			c, err := net.Dial("tcp", s.LocalAddr().String())
 			require.NoError(t, err)
-			defer c.Close()
+			defer func(closeResource func() error) { _ = closeResource() }(c.Close)
 			require.NoError(t, c.SetDeadline(time.Now().Add(time.Second)))
 			frame := certificateFrame(t)
 			if split {
@@ -78,7 +78,7 @@ func TestServer_ShutdownClosesEmptyAndPartialTCP(t *testing.T) {
 	for _, prefix := range [][]byte{nil, {0}, {0, 20, 0}} {
 		c, err := net.Dial("tcp", s.LocalAddr().String())
 		require.NoError(t, err)
-		defer c.Close()
+		defer func(closeResource func() error) { _ = closeResource() }(c.Close)
 		clients = append(clients, c)
 		if prefix != nil {
 			_, err = c.Write(prefix)
@@ -106,7 +106,7 @@ func TestServer_ExpiredShutdownStillClosesAcceptedTCP(t *testing.T) {
 	s := lifecycleServer(t)
 	c, err := net.Dial("tcp", s.LocalAddr().String())
 	require.NoError(t, err)
-	defer c.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(c.Close)
 	require.NoError(t, c.SetDeadline(time.Now().Add(time.Second)))
 	_, err = c.Write(certificateFrame(t))
 	require.NoError(t, err)
@@ -170,7 +170,7 @@ func TestServer_WriteBudgetBeginsAfterHandler(t *testing.T) {
 					info, e := client.DialStampContext(ctx, *stamp)
 					require.NoError(t, e)
 					before := time.Now()
-					reply, e := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info)
+					reply, e := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info, nil)
 					t.Logf("proto=%s processing=%s elapsed=%s err=%v", proto, delay, time.Since(before), e)
 					require.NoError(t, e, "successful handler processing must not consume the actual socket write deadline")
 					require.Len(t, reply.Answer, 1)
@@ -202,11 +202,11 @@ func TestServer_RestartWaitsForAdmittedHandler(t *testing.T) {
 	require.NoError(t, e)
 	c, e := net.Dial("tcp", srv.LocalAddr().String())
 	require.NoError(t, e)
-	defer c.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(c.Close)
 	clientDone := make(chan error, 1)
 	go func() {
-		_, e := client.ExchangeConnContext(ctx, c, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info)
-		clientDone <- e
+		_, exchangeErr := client.ExchangeConnContext(ctx, c, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info, nil)
+		clientDone <- exchangeErr
 	}()
 	var handlerCtx context.Context
 	select {
@@ -224,8 +224,8 @@ func TestServer_RestartWaitsForAdmittedHandler(t *testing.T) {
 	}
 	require.Error(t, srv.Start(t.Context()), "previous held run must prevent restart")
 	select {
-	case e := <-clientDone:
-		require.Error(t, e)
+	case resultErr := <-clientDone:
+		require.Error(t, resultErr)
 	case <-time.After(time.Second):
 		t.Fatal("accepted client was not physically closed while handler remained held")
 	}
@@ -237,7 +237,7 @@ func TestServer_RestartWaitsForAdmittedHandler(t *testing.T) {
 	stamp = newTestServerStamp(srv, key)
 	info, e = client.DialStampContext(ctx, *stamp)
 	require.NoError(t, e)
-	answer, e := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info)
+	answer, e := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("test.example.", dns.TypeA), info, nil)
 	require.NoError(t, e)
 	require.Len(t, answer.Answer, 1)
 }

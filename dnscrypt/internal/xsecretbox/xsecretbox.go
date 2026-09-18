@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 
 	"golang.org/x/crypto/chacha20"
+	//lint:ignore SA1019 DNSCrypt requires secretbox Poly1305(ciphertext), not RFC 8439 AEAD.
 	"golang.org/x/crypto/poly1305"
 )
 
@@ -54,6 +55,7 @@ func Seal(out, nonce, message, key []byte) (res []byte) {
 	tagOut := out
 	out = out[poly1305.TagSize:]
 	for i, x := range firstMessageBlock {
+		// #nosec G602 -- i < min(message length, 32); out covers that length and firstBlock has 64 bytes.
 		out[i] = firstBlock[(BlockSize-KeySize)+i] ^ x
 	}
 
@@ -117,6 +119,7 @@ func Open(out, nonce, box, key []byte) (res []byte, err error) {
 	}
 
 	for i, x := range firstMessageBlock {
+		// #nosec G602 -- i < min(message length, 32); out covers that length and firstBlock has 64 bytes.
 		out[i] = firstBlock[(BlockSize-KeySize)+i] ^ x
 	}
 

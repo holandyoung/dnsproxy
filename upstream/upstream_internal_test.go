@@ -30,11 +30,11 @@ import (
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
-	"github.com/ameshkov/dnsstamps"
+	"github.com/holandyoung/quic-go"
+	"github.com/holandyoung/quic-go/qlog"
+	"github.com/holandyoung/quic-go/qlogwriter"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -362,21 +362,21 @@ func TestUpstreamDoTBootstrap(t *testing.T) {
 		require.NoError(testutil.PanicT{}, w.WriteMsg(respondToTestMessage(r)))
 	})
 	for _, tc := range []struct {
-		address string
 		roots   *x509.CertPool
+		address string
 	}{
-		{fmt.Sprintf("tls://127.0.0.1:%d", bootDoT.port), bootDoT.rootCAs},
-		{"https://" + bootDoH.addr + "/dns-query", bootDoH.rootCAs},
+		{address: fmt.Sprintf("tls://127.0.0.1:%d", bootDoT.port), roots: bootDoT.rootCAs},
+		{address: "https://" + bootDoH.addr + "/dns-query", roots: bootDoH.rootCAs},
 	} {
 		t.Run(tc.address, func(t *testing.T) {
 			queries.Store(0)
 			resolver, err := NewUpstreamResolver(tc.address, &Options{Logger: testLogger, Timeout: time.Second, RootCAs: tc.roots})
 			require.NoError(t, err)
-			defer resolver.Close()
+			defer func(closeResource func() error) { _ = closeResource() }(resolver.Close)
 			address := fmt.Sprintf("tls://resolver.test:%d", target.port)
 			u, err := AddressToUpstream(address, &Options{Logger: testLogger, Timeout: time.Second, RootCAs: target.rootCAs, ServerName: "127.0.0.1", Bootstrap: NewCachingResolver(resolver)})
 			require.NoError(t, err)
-			defer u.Close()
+			defer func(closeResource func() error) { _ = closeResource() }(u.Close)
 			checkUpstream(t, u, address)
 			require.Positive(t, queries.Load(), "native encrypted bootstrap must actually be used")
 		})
@@ -395,19 +395,19 @@ func TestUpstreamsInvalidBootstrap(t *testing.T) {
 	dotName := fmt.Sprintf("resolver.test:%d", dot.port)
 	dohName := strings.Replace(doh.addr, "127.0.0.1", "resolver.test", 1)
 	for _, tc := range []struct {
-		name, address string
 		roots         *x509.CertPool
+		name, address string
 	}{
-		{"dot", "tls://" + dotName, dot.rootCAs},
-		{"doh", "https://" + dohName + "/dns-query", doh.rootCAs},
-		{"stamp_dot", (&dnsstamps.ServerStamp{Proto: dnsstamps.StampProtoTypeTLS, ProviderName: dotName}).String(), dot.rootCAs},
-		{"stamp_doh", (&dnsstamps.ServerStamp{Proto: dnsstamps.StampProtoTypeDoH, ProviderName: dohName, Path: "/dns-query"}).String(), doh.rootCAs},
+		{name: "dot", address: "tls://" + dotName, roots: dot.rootCAs},
+		{name: "doh", address: "https://" + dohName + "/dns-query", roots: doh.rootCAs},
+		{name: "stamp_dot", address: (&dnsstamps.ServerStamp{Proto: dnsstamps.StampProtoTypeTLS, ProviderName: dotName}).String(), roots: dot.rootCAs},
+		{name: "stamp_doh", address: (&dnsstamps.ServerStamp{Proto: dnsstamps.StampProtoTypeDoH, ProviderName: dohName, Path: "/dns-query"}).String(), roots: doh.rootCAs},
 	} {
 		for _, badFirst := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/bad_first_%t", tc.name, badFirst), func(t *testing.T) {
 				var failedCalls, goodCalls atomic.Int32
 				failed := startDNSServer(t, func(dns.ResponseWriter, *dns.Msg) { failedCalls.Add(1) })
-				defer failed.Close()
+				defer func(closeResource func() error) { _ = closeResource() }(failed.Close)
 				good := startDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
 					goodCalls.Add(1)
 					response := new(dns.Msg).SetReply(r)
@@ -416,7 +416,7 @@ func TestUpstreamsInvalidBootstrap(t *testing.T) {
 					}
 					require.NoError(testutil.PanicT{}, w.WriteMsg(response))
 				})
-				defer good.Close()
+				defer func(closeResource func() error) { _ = closeResource() }(good.Close)
 				ports := []int{failed.port, good.port}
 				if !badFirst {
 					ports[0], ports[1] = ports[1], ports[0]
@@ -425,12 +425,12 @@ func TestUpstreamsInvalidBootstrap(t *testing.T) {
 				for _, port := range ports {
 					resolver, err := NewUpstreamResolver(fmt.Sprintf("127.0.0.1:%d", port), &Options{Logger: testLogger, Timeout: 20 * time.Millisecond})
 					require.NoError(t, err)
-					defer resolver.Close()
+					defer func(closeResource func() error) { _ = closeResource() }(resolver.Close)
 					resolvers = append(resolvers, NewCachingResolver(resolver))
 				}
 				u, err := AddressToUpstream(tc.address, &Options{Logger: testLogger, Bootstrap: resolvers, RootCAs: tc.roots, ServerName: "127.0.0.1", Timeout: time.Second})
 				require.NoError(t, err)
-				defer u.Close()
+				defer func(closeResource func() error) { _ = closeResource() }(u.Close)
 				checkUpstream(t, u, tc.address)
 				require.Positive(t, goodCalls.Load(), "success must use the actual native bootstrap")
 				if badFirst {
@@ -939,21 +939,21 @@ func TestNewUpstreamResolver_validity(t *testing.T) {
 			if tc.name == "doh" {
 				opts.RootCAs = doh.rootCAs
 			}
-			r, err := NewUpstreamResolver(tc.addr, opts)
+			r, resolverErr := NewUpstreamResolver(tc.addr, opts)
 			if tc.wantErrMsg != "" {
-				assert.Equal(t, tc.wantErrMsg, err.Error())
-				if nberr := (&NotBootstrapError{}); errors.As(err, &nberr) {
+				assert.Equal(t, tc.wantErrMsg, resolverErr.Error())
+				if nberr := (&NotBootstrapError{}); errors.As(resolverErr, &nberr) {
 					assert.NotNil(t, r)
 				}
 
 				return
 			}
 
-			require.NoError(t, err)
+			require.NoError(t, resolverErr)
 			t.Cleanup(func() { require.NoError(t, r.Close()) })
 
-			addrs, err := r.LookupNetIP(context.Background(), "ip", "cloudflare-dns.com")
-			require.NoError(t, err)
+			addrs, resolverErr := r.LookupNetIP(context.Background(), "ip", "cloudflare-dns.com")
+			require.NoError(t, resolverErr)
 
 			assert.NotEmpty(t, addrs)
 		})

@@ -27,12 +27,12 @@ type ExchangeResult struct {
 // abandon it without canceling the native operation.  It never calls user code
 // or waits for I/O.  Construct it with NewExchangeState; do not copy it.
 type ExchangeState struct {
-	mu       sync.Mutex
-	deadline time.Time
-	done     chan struct{}
 	result   ExchangeResult
+	deadline time.Time
 	received time.Time
+	done     chan struct{}
 	ticket   uint64
+	mu       sync.Mutex
 	original uint16
 	started  bool
 	reserved bool
@@ -97,6 +97,16 @@ func (s *ExchangeState) start(id uint16) error {
 func (s *ExchangeState) reserve(wire []byte, id uint16, udp bool) uint64 {
 	if s == nil || len(wire) < 12 || binary.BigEndian.Uint16(wire) != id ||
 		wire[2]&0x80 == 0 || (udp && wire[2]&0x02 != 0) {
+		return 0
+	}
+	return s.reserveCandidate()
+}
+
+// reserveCandidate also admits complete encrypted frames whose DNS header is
+// unavailable until bounded local decryption. Failed authentication, wrong ID,
+// invalid questions and UDP truncation release that candidate before any retry.
+func (s *ExchangeState) reserveCandidate() uint64 {
+	if s == nil {
 		return 0
 	}
 	s.mu.Lock()

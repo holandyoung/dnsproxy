@@ -12,6 +12,7 @@ import (
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
+	"github.com/holandyoung/dnsproxy/internal/netutil"
 	"github.com/miekg/dns"
 )
 
@@ -115,7 +116,7 @@ func (p *plainDNS) dialExchange(
 		return nil, fmt.Errorf("dialing %s over %s: %w", p.addr.Host, network, err)
 	}
 	if network == networkUDP {
-		conn.Conn = connectedDatagram{conn.Conn}
+		conn.Conn = netutil.ConnectedDatagram{Conn: conn.Conn}
 	}
 	defer func(c net.Conn) { err = errors.WithDeferred(err, c.Close()) }(conn.Conn)
 
@@ -126,7 +127,7 @@ func (p *plainDNS) dialExchange(
 			return nil, fmt.Errorf("dialing %s over %s again: %w", p.addr.Host, network, err)
 		}
 		if network == networkUDP {
-			conn.Conn = connectedDatagram{conn.Conn}
+			conn.Conn = netutil.ConnectedDatagram{Conn: conn.Conn}
 		}
 		defer func(c net.Conn) { err = errors.WithDeferred(err, c.Close()) }(conn.Conn)
 
@@ -157,26 +158,6 @@ func (p *plainDNS) exchangeWithConn(req *dns.Msg, conn *dns.Conn, network string
 		return nil, err
 	}
 	return readDNSResponse(conn, req, state, network == networkUDP, !p.bootstrap)
-}
-
-// connectedDatagram preserves the explicit UDP network at the miekg/dns
-// boundary. That library selects DNS framing using net.PacketConn, while a
-// routed connection may expose only net.Conn. Reads and writes still use the
-// original connected socket and its route owner.
-type connectedDatagram struct{ net.Conn }
-
-var _ net.PacketConn = connectedDatagram{}
-
-func (c connectedDatagram) ReadFrom(b []byte) (int, net.Addr, error) {
-	n, err := c.Read(b)
-	return n, c.RemoteAddr(), err
-}
-
-func (c connectedDatagram) WriteTo(b []byte, addr net.Addr) (int, error) {
-	if addr == nil || addr.Network() != c.RemoteAddr().Network() || addr.String() != c.RemoteAddr().String() {
-		return 0, errors.Error("connected UDP destination differs from configured route")
-	}
-	return c.Write(b)
 }
 
 // setRequestForNetwork sets connection options in conn and overrides the

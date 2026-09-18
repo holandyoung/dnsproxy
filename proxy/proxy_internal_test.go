@@ -565,7 +565,7 @@ func TestExchangeWithReservedDomains(t *testing.T) {
 	addr := dnsProxy.Addr(ProtoTCP)
 	conn, err := dns.Dial("tcp", addr.String())
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(conn.Close)
 
 	// Create google-a test message.
 	req := newTestMessage()
@@ -789,7 +789,7 @@ func TestFallbackFromInvalidBootstrap(t *testing.T) {
 		Timeout: testTimeout,
 	})
 	require.NoError(t, err)
-	defer invalidRslv.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(invalidRslv.Close)
 
 	// Prepare the proxy server
 	upsConf, err := ParseUpstreamsConfig([]string{"tls://unresolved.invalid"}, &upstream.Options{
@@ -1325,10 +1325,11 @@ func TestProxy_Resolve_withOptimisticResolver(t *testing.T) {
 	req := firstCtx.Req.Copy()
 	p.addDO(req)
 	key := msgToKey(req)
-	data := (&cacheItem{
+	data, packErr := (&cacheItem{
 		m: buildResp(req, 0),
 		u: testUpsAddr,
 	}).pack()
+	require.NoError(t, packErr)
 	items := glcache.New(glcache.Config{
 		EnableLRU: true,
 	})

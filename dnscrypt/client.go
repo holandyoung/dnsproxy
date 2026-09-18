@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/ed25519"
-	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,7 +12,8 @@ import (
 
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
-	"github.com/ameshkov/dnsstamps"
+	"github.com/holandyoung/dnsproxy/internal/netutil"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/miekg/dns"
 )
 
@@ -47,16 +47,22 @@ type ResolverInfo struct {
 
 // ClientConfig is the configuration structure for [Client].
 type ClientConfig struct {
+	// LocalAddr is the optional local source for certificate and encrypted
+	// exchanges. Its concrete type must match Proto. Nil uses native selection.
+	LocalAddr net.Addr
+
 	// Logger is a logger instance for Client.  If not set, slog.Default()
 	// will be used.
 	Logger *slog.Logger
 
+	// DialContext owns all certificate and encrypted connections when set.
+	// It replaces native dialing, including the native certificate dial ceiling;
+	// the supplied context owns the complete operation budget. LocalAddr applies
+	// only to native dialing. The caller owns shutdown of its routed connections.
+	DialContext func(context.Context, string, string) (net.Conn, error)
+
 	// Proto is the base network protocol.
 	Proto Proto
-
-	// LocalAddr is the optional local source for certificate and encrypted
-	// exchanges. Its concrete type must match Proto. Nil uses native selection.
-	LocalAddr net.Addr
 
 	// UDPSize is the maximum size of a DNS response (or query) this client
 	// can send or receive.  If not set, we use [dns.MinMsgSize] by default.
@@ -65,20 +71,38 @@ type ClientConfig struct {
 
 // Client is a DNSCrypt resolver client.
 type Client struct {
-	logger  *slog.Logger
-	dialer  *net.Dialer
-	proto   Proto
-	udpSize int
+	logger             *slog.Logger
+	dialContext        func(context.Context, string, string) (net.Conn, error)
+	proto              Proto
+	certificateTimeout time.Duration
+	udpSize            int
 }
 
 // NewClient returns properly initialized *Client.  c must be non-nil and valid.
 func NewClient(conf *ClientConfig) (c *Client) {
-	return &Client{
-		logger:  cmp.Or(conf.Logger, slog.Default()),
-		dialer:  &net.Dialer{LocalAddr: conf.LocalAddr},
-		proto:   conf.Proto,
-		udpSize: cmp.Or(conf.UDPSize, dns.MinMsgSize),
+	dial := conf.DialContext
+	var certificateTimeout time.Duration
+	if dial == nil {
+		dial = (&net.Dialer{LocalAddr: conf.LocalAddr}).DialContext
+		certificateTimeout = 2 * time.Second
 	}
+	return &Client{
+		logger:             cmp.Or(conf.Logger, slog.Default()),
+		dialContext:        dial,
+		certificateTimeout: certificateTimeout,
+		proto:              conf.Proto,
+		udpSize:            cmp.Or(conf.UDPSize, dns.MinMsgSize),
+	}
+}
+
+// ResponseObserver belongs to one encrypted exchange. Received is called after
+// the complete ciphertext is read, before bounded decryption and DNS decoding.
+// Decoded always follows it, even on failure, before connection cleanup. Both
+// methods must be bounded and must not perform I/O. Certificate replies do not
+// enter this boundary. A rejected candidate cannot cover another read or retry.
+type ResponseObserver interface {
+	Received()
+	Decoded(*dns.Msg, error) error
 }
 
 // DialContext fetches and validates DNSCrypt certificate from the given server.
@@ -137,19 +161,20 @@ func (c *Client) ExchangeContext(
 	ctx context.Context,
 	m *dns.Msg,
 	info *ResolverInfo,
+	observer ResponseObserver,
 ) (resp *dns.Msg, err error) {
 	proto := ProtoUDP
 	if c.proto == ProtoTCP {
 		proto = ProtoTCP
 	}
 
-	conn, err := c.dialer.DialContext(ctx, string(proto), info.ServerAddress)
+	conn, err := c.dialContext(ctx, string(proto), info.ServerAddress)
 	if err != nil {
 		return nil, fmt.Errorf("dialing: %w", err)
 	}
 	defer func() { err = errors.WithDeferred(err, conn.Close()) }()
 
-	resp, err = c.ExchangeConnContext(ctx, conn, m, info)
+	resp, err = c.ExchangeConnContext(ctx, conn, m, info, observer)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging: %w", err)
 	}
@@ -166,6 +191,7 @@ func (c *Client) ExchangeConnContext(
 	conn net.Conn,
 	m *dns.Msg,
 	info *ResolverInfo,
+	observer ResponseObserver,
 ) (resp *dns.Msg, err error) {
 	if err = ctx.Err(); err != nil {
 		return nil, err
@@ -189,7 +215,16 @@ func (c *Client) ExchangeConnContext(
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
+	if observer != nil {
+		observer.Received()
+	}
 	resp, err = c.decrypt(b, clientNonce, info)
+	if observer != nil {
+		observed := observer.Decoded(resp, err)
+		if err == nil {
+			err = observed
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("decrypting response: %w", err)
 	}
@@ -205,10 +240,8 @@ func (c *Client) writeQuery(ctx context.Context, conn net.Conn, query []byte) (e
 		_ = conn.SetWriteDeadline(deadline)
 	}
 
-	if _, ok = conn.(*net.TCPConn); ok {
-		l := make([]byte, 2)
-		binary.BigEndian.PutUint16(l, uint16(len(query)))
-		_, err = (&net.Buffers{l, query}).WriteTo(conn)
+	if c.proto == ProtoTCP {
+		err = writePrefixed(query, conn)
 		if err != nil {
 			return fmt.Errorf("writing to tcp connection: %w", err)
 		}
@@ -230,12 +263,7 @@ func (c *Client) readResponse(ctx context.Context, conn net.Conn) (resp []byte, 
 		_ = conn.SetReadDeadline(deadline)
 	}
 
-	proto := ProtoUDP
-	if _, ok = conn.(*net.TCPConn); ok {
-		proto = ProtoTCP
-	}
-
-	if proto == ProtoUDP {
+	if c.proto != ProtoTCP {
 		resp = make([]byte, c.udpSize)
 		var n int
 		n, err = conn.Read(resp)
@@ -316,21 +344,51 @@ func (c *Client) fetchCert(
 
 	query := &dns.Msg{}
 	query.SetQuestion(providerName, dns.TypeTXT)
-	// Supplying LocalAddr must not disable miekg/dns's ordinary two-second
-	// certificate dial budget. Encrypted exchanges retain their own policy.
-	dialer := *c.dialer
-	if dialer.Timeout == 0 {
-		dialer.Timeout = 2 * time.Second
+	dialCtx := ctx
+	if c.certificateTimeout > 0 {
+		var cancel context.CancelFunc
+		dialCtx, cancel = context.WithTimeout(ctx, c.certificateTimeout)
+		defer cancel()
 	}
-	client := dns.Client{Net: string(c.proto), UDPSize: uint16(defaultUDPSize), Dialer: &dialer}
-	conn, err := client.DialContext(ctx, stamp.ServerAddrStr)
+	proto := ProtoUDP
+	if c.proto == ProtoTCP {
+		proto = ProtoTCP
+	}
+	socket, err := c.dialContext(dialCtx, string(proto), stamp.ServerAddrStr)
 	if err != nil {
 		return nil, fmt.Errorf("dialing certificate server: %w", err)
 	}
-	defer conn.Close()
+	if proto == ProtoUDP {
+		socket = netutil.ConnectedDatagram{Conn: socket}
+	}
+	conn := &dns.Conn{Conn: socket, UDPSize: uint16(defaultUDPSize)}
+	defer func(closeResource func() error) { _ = closeResource() }(conn.Close)
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	r, _, err := client.ExchangeWithConnContext(ctx, query, conn)
+	deadline, _ := ctx.Deadline()
+	if c.certificateTimeout > 0 {
+		native := time.Now().Add(c.certificateTimeout)
+		if deadline.IsZero() || native.Before(deadline) {
+			deadline = native
+		}
+	}
+	if err = conn.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	if err = conn.WriteMsg(query); err != nil {
+		return nil, fmt.Errorf("sending certificate query: %w", err)
+	}
+	var r *dns.Msg
+	for {
+		r, err = conn.ReadMsg()
+		if err != nil || r.Id == query.Id {
+			break
+		}
+		if proto == ProtoTCP {
+			err = dns.ErrId
+			break
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sending dns query: %w", err)
 	}

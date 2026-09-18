@@ -52,3 +52,34 @@ func TestDoHPreservesEscapedEndpointPath(t *testing.T) {
 		}
 	}
 }
+
+func TestDoHHTTPAuthorityIsIndependentOfDialAndTLS(t *testing.T) {
+	for _, protocol := range []HTTPVersion{HTTPVersion11, HTTPVersion2, HTTPVersion3} {
+		t.Run(string(protocol), func(t *testing.T) {
+			seen := make(chan string, 2)
+			handler := createDoHHandlerFunc()
+			server := startDoHServer(t, testDoHServerOptions{http3Enabled: protocol == HTTPVersion3, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen <- r.Host
+				handler(w, r)
+			})})
+			scheme := "https://"
+			if protocol == HTTPVersion3 {
+				scheme = "h3://"
+			}
+			for _, authority := range []string{"", "resolver.example:5443"} {
+				options := &Options{RootCAs: server.rootCAs, HTTPVersions: []HTTPVersion{protocol}, ServerName: "127.0.0.1", HTTPHost: authority, Timeout: time.Second, Logger: testLogger}
+				resolver, err := AddressToUpstream(scheme+server.addr+"/dns-query", options.Clone())
+				require.NoError(t, err)
+				response, err := resolver.Exchange(createTestMessage(), nil)
+				require.NoError(t, err)
+				require.NotEmpty(t, response.Answer)
+				want := authority
+				if want == "" {
+					want = server.addr
+				}
+				require.Equal(t, want, <-seen)
+				require.NoError(t, resolver.Close())
+			}
+		})
+	}
+}

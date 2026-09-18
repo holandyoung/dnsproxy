@@ -47,7 +47,7 @@ func TestReceiptUDPContinuationRequiresNewCompleteCandidate(t *testing.T) {
 			req := createTestMessage()
 			req.Id = 0
 			finished := make(chan error, 1)
-			go func() { _, err := u.Exchange(req, state); finished <- err }()
+			go func() { _, exchangeErr := u.Exchange(req, state); finished <- exchangeErr }()
 			if mode != "TCP failure" {
 				select {
 				case <-entered:
@@ -58,8 +58,8 @@ func TestReceiptUDPContinuationRequiresNewCompleteCandidate(t *testing.T) {
 				require.False(t, ready, "provisional UDP packet cannot publish the answer")
 				if mode == "TCP late" || mode == "question retry" {
 					state.Expire()
-					result, ready := state.Result()
-					require.True(t, ready, "rejected UDP candidate cannot keep a reservation during TCP I/O")
+					result, continuationReady := state.Result()
+					require.True(t, continuationReady, "rejected UDP candidate cannot keep a reservation during TCP I/O")
 					require.ErrorIs(t, result.Err, context.DeadlineExceeded)
 				}
 			}
@@ -129,7 +129,7 @@ func TestReceiptDoHBeforeNativeH2BodyClose(t *testing.T) {
 	}}}
 	state := NewExchangeState(time.Now().Add(time.Second))
 	finished := make(chan error, 1)
-	go func() { _, err := u.Exchange(createTestMessage(), state); finished <- err }()
+	go func() { _, exchangeErr := u.Exchange(createTestMessage(), state); finished <- exchangeErr }()
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -144,8 +144,8 @@ func TestReceiptDoHBeforeNativeH2BodyClose(t *testing.T) {
 	require.NoError(t, result.Err)
 	require.NotEmpty(t, result.Response.Answer)
 	select {
-	case err := <-finished:
-		t.Fatalf("native cleanup should still be waiting: %v", err)
+	case resultErr := <-finished:
+		t.Fatalf("native cleanup should still be waiting: %v", resultErr)
 	case <-time.After(time.Until(state.deadline)):
 	}
 	state.Expire()
