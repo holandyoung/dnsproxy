@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
+	"github.com/holandyoung/dnsproxy/diagnostic"
 	"github.com/miekg/dns"
 )
 
@@ -72,7 +73,7 @@ func TestDNSDiagnosticsDeferPresentation(t *testing.T) {
 			handler.records[0].Attrs(func(a slog.Attr) bool {
 				switch a.Key {
 				case "dns":
-					value, ok := a.Value.Any().(DNSMessage)
+					value, ok := a.Value.Any().(diagnostic.DNSMessage)
 					if ok {
 						got = value.Msg
 					}

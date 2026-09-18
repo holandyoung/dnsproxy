@@ -13,6 +13,7 @@ import (
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/syncutil"
+	"github.com/holandyoung/dnsproxy/diagnostic"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
 	proxynetutil "github.com/holandyoung/dnsproxy/internal/netutil"
 	"github.com/holandyoung/dnsproxy/proxyutil"
@@ -134,7 +135,7 @@ func (p *Proxy) handleTCPConnection(
 	proto Proto,
 	reqSema syncutil.Semaphore,
 ) {
-	defer slogutil.RecoverAndLog(ctx, p.logger)
+	defer diagnostic.RecoverAndLog(ctx, p.logger)
 	defer reqSema.Release()
 	closeConn := sync.OnceFunc(func() {
 		err := conn.Close()

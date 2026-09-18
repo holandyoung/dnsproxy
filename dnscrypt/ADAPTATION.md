@@ -38,6 +38,12 @@ a second external fork or reimplementing DNSCrypt cryptography.
 
 ## Local changes
 
+- `server.go`, `servertcp.go`, `serverudp.go`: preserve every existing directly
+  deferred panic recovery boundary, and submit its complete borrowed value to
+  the common `diagnostic` package. Enabled handlers own stack capture and value
+  presentation; disabled output still recovers and runs the same cleanup. The
+  eager golibs stack/per-line logging calls are removed. Capacity, snapshots and
+  asynchronous output remain the embedding application's ownership.
 - `dns.go`: read the full TCP prefix, reject oversized outgoing frames before
   narrowing their length through the common proxyutil.LengthPrefix owner.
   Remove the impossible uint16 > 65535 read check.

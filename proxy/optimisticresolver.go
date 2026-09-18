@@ -7,6 +7,7 @@ import (
 
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/syncutil"
+	"github.com/holandyoung/dnsproxy/diagnostic"
 )
 
 // cachingResolver is the DNS resolver that is also able to cache responses.
@@ -49,7 +50,7 @@ func newOptimisticResolver(cr cachingResolver) (s *optimisticResolver) {
 //
 // TODO(e.burkov):  Pass the context.
 func (s *optimisticResolver) resolveOnce(dctx *DNSContext, key []byte, l *slog.Logger) {
-	defer slogutil.RecoverAndLog(context.TODO(), l)
+	defer diagnostic.RecoverAndLog(context.TODO(), l)
 
 	keyHexed := hex.EncodeToString(key)
 	if _, ok := s.reqs.LoadOrStore(keyHexed, unit{}); ok {

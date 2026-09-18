@@ -6,8 +6,8 @@ import (
 	"slices"
 
 	"github.com/AdguardTeam/golibs/errors"
-	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
+	"github.com/holandyoung/dnsproxy/diagnostic"
 	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/holandyoung/dnsproxy/upstream"
 	"github.com/miekg/dns"
@@ -27,7 +27,7 @@ func (p *Proxy) lookupIPAddr(
 	qtype uint16,
 	ch chan *lookupResult,
 ) {
-	defer slogutil.RecoverAndLog(ctx, p.logger)
+	defer diagnostic.RecoverAndLog(ctx, p.logger)
 
 	req := (&dns.Msg{}).SetQuestion(host, qtype)
 
