@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"testing"
 
@@ -64,7 +66,10 @@ func TestDNSDiagnosticsDeferPresentation(t *testing.T) {
 			handler.records[0].Attrs(func(a slog.Attr) bool {
 				switch a.Key {
 				case "dns":
-					got, _ = a.Value.Any().(*dns.Msg)
+					value, ok := a.Value.Any().(DNSMessage)
+					if ok {
+						got = value.Msg
+					}
 				case "direction":
 					direction = a.Value.String()
 				}
@@ -74,5 +79,29 @@ func TestDNSDiagnosticsDeferPresentation(t *testing.T) {
 				t.Fatalf("complete borrowed message or direction lost: %p %q", got, direction)
 			}
 		})
+	}
+}
+
+func TestDNSDiagnosticsJSONPreservesParameterIdentity(t *testing.T) {
+	for _, parameter := range []dns.SVCBKeyValue{new(dns.SVCBNoDefaultAlpn), new(dns.SVCBOhttp)} {
+		message := &dns.Msg{Answer: []dns.RR{&dns.HTTPS{SVCB: dns.SVCB{
+			Hdr:      dns.RR_Header{Name: "diagnostic.example.", Rrtype: dns.TypeHTTPS, Class: dns.ClassINET},
+			Priority: 1, Target: ".", Value: []dns.SVCBKeyValue{&dns.SVCBAlpn{Alpn: []string{"h2"}}, parameter},
+		}}}}
+		if _, err := message.Pack(); err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		p := &Proxy{logger: slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+		p.logDNSMessage(t.Context(), message)
+		var record struct {
+			DNS string `json:"dns"`
+		}
+		if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.DNS != message.String() {
+			t.Fatalf("complete native DNS presentation lost: %q, want %q", record.DNS, message.String())
+		}
 	}
 }

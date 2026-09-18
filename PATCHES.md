@@ -8,16 +8,21 @@ fork revision directly; it does not replace the upstream module at build time.
 ## Required semantics and deviations
 
 DNS message diagnostics use one structured debug record with direction and the
-complete borrowed `*dns.Msg`; the former eager `String`/per-line dump is retired.
+complete borrowed `DNSMessage` value; the former eager `String`/per-line dump is retired.
 The Enabled check precedes all message processing, including at info level.
 The synchronous handler consumes the message during Handle. An asynchronous
-handler must reserve capacity and take its own immutable snapshot before Handle
-returns, then format/write it in its worker; Record.Clone alone does not copy
+handler must recognize this typed value before resolving LogValuer, reserve
+capacity and take its own immutable Msg snapshot before Handle returns, then
+format/write it in its worker; Record.Clone alone does not copy
 Any payloads. This is a log format change, not a DNS wire or query policy change.
 TestDNSDiagnosticsDeferPresentation detects producer-side text generation and
 requires the entire message to reach an enabled handler. Disabled logging never
 evaluates the RR presentation. Application queue/byte limits, drops, metrics
 and shutdown remain the application's ownership and acceptance boundary.
+DNSMessage.LogValue retains the complete native DNS text: directly passing
+dns.Msg to encoding/json loses empty-struct SVCB parameter identities.
+TestDNSDiagnosticsJSONPreservesParameterIdentity covers real packable HTTPS
+records with distinct no-default-alpn and ohttp values through standard slog JSON.
 
 Bootstrap preserves the application's stricter existing answer policy before
 `UpstreamResolver` reduces a DNS message to addresses: QR, opcode, ID, the exact
