@@ -17,13 +17,13 @@ import (
 // time the caller binds to it.
 //
 // TODO(m.kazantsev):  Move to the top-level dnsproxytest package.
-func NewFreePort(tb testing.TB) (p uint) {
+func NewFreePort(tb testing.TB) (p uint16) {
 	tb.Helper()
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(tb, err)
 
-	p = uint(l.Addr().(*net.TCPAddr).Port)
+	p = l.Addr().(*net.TCPAddr).AddrPort().Port()
 
 	// Stop listening immediately.
 	require.NoError(tb, l.Close())

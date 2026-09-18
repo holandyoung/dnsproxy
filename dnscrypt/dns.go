@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/AdguardTeam/golibs/errors"
+	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/miekg/dns"
 )
 
@@ -73,12 +74,11 @@ func readPrefixed(conn net.Conn) (b []byte, err error) {
 // writePrefixed writes a prefixed DNS message to a TCP connection.  conn must
 // not be nil.
 func writePrefixed(b []byte, conn net.Conn) (err error) {
-	if len(b) > dns.MaxMsgSize {
+	prefix, err := proxyutil.LengthPrefix(len(b))
+	if err != nil {
 		return ErrQueryTooLarge
 	}
-	l := make([]byte, 2)
-	binary.BigEndian.PutUint16(l, uint16(len(b)))
-	_, err = (&net.Buffers{l, b}).WriteTo(conn)
+	_, err = (&net.Buffers{prefix[:], b}).WriteTo(conn)
 
 	return errors.Annotate(err, "writing to connection: %w")
 }

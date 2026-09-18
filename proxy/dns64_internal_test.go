@@ -412,8 +412,8 @@ func TestProxy_Resolve_dns64(t *testing.T) {
 			servicetest.RequireRun(t, p, testTimeout)
 
 			query := new(dns.Msg).SetQuestion(tc.qname, tc.qtype)
-			res, _, err := (&dns.Client{Net: "tcp", Timeout: testTimeout}).Exchange(query, p.Addr(ProtoTCP).String())
-			require.NoError(t, err)
+			res, _, exchangeErr := (&dns.Client{Net: "tcp", Timeout: testTimeout}).Exchange(query, p.Addr(ProtoTCP).String())
+			require.NoError(t, exchangeErr)
 			require.NotNil(t, res)
 			// Normalize only wire metadata (RDLENGTH and IP byte width). All
 			// records, TTLs, names, and record data remain exact assertions.

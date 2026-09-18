@@ -4,9 +4,9 @@ import (
 	"crypto/ed25519"
 	"testing"
 
-	"github.com/ameshkov/dnsstamps"
 	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/holandyoung/dnsproxy/dnscrypt/internal/dnscrypttest"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

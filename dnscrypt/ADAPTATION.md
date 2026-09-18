@@ -11,7 +11,9 @@ under this directory. Module imports now use
 `github.com/holandyoung/dnsproxy/dnscrypt`. The source repository's command,
 forwarder, build scripts and tool dependencies are not product consumers and
 are not adopted. The generator's exported library API and configuration file
-format remain native. No cryptographic algorithm is changed.
+format remain native. No cryptographic algorithm is changed. The stamp codec import now uses the
+maintained jedisct1/go-dnsstamps module (MIT), shared with native upstreams; the
+old codec is removed from every caller and from the dependency graph.
 
 All dnsproxy client and server imports use this owner. The original module
 dependency is removed; no replace directive or compatibility facade remains.
@@ -37,7 +39,16 @@ a second external fork or reimplementing DNSCrypt cryptography.
 ## Local changes
 
 - `dns.go`: read the full TCP prefix, reject oversized outgoing frames before
-  narrowing their length. Remove the impossible uint16 > 65535 read check.
+  narrowing their length through the common proxyutil.LengthPrefix owner.
+  Remove the impossible uint16 > 65535 read check.
+- `generate.go`, `certificate.go`: observe one generation time, reject times
+  outside the protocol's uint32 Unix-second range, and widen wire timestamps
+  for host-clock validation. Preserve inclusive validity endpoints.
+- `internal/xsecretbox`: retain the protocol's original secretbox construction;
+  explain the precise Poly1305 deprecation and proven short-block index bounds
+  to static analyzers. Independent libsodium 1.0.18 ciphertext fixtures verify
+  every block boundary, existing legal aliasing and tamper rejection. See
+  [the representation boundary record](../PATCHES.md#frame-cache-and-certificate-representation-boundaries).
 - `server.go`, `servertcp.go`, `serverudp.go`: one serving run owns its context,
   listeners, accepted sockets and completion channel. Register that run before
   Start returns; join admitted work before publishing completion. Stop cancels
@@ -76,8 +87,16 @@ not sufficient. The fixture extends that write's deadline so the ordinary I/O
 timeout cannot make a broken forced Shutdown pass. These kernel-state assertions
 are isolated in a Linux-specific test; the protocol/lifecycle tests remain portable. The original upstream protocol, certificate,
 client, crypto and UDP truncation tests remain part of the fork's full race gate.
-No new support for DNSCrypt receipt admission is implied: the product's six
-upstream protocols use the separate native receipt contract.
+DNSCrypt upstreams now join the same native receipt contract. The optional
+per-call ResponseObserver runs at complete ciphertext receipt and then after
+bounded authentication/decode, before physical Close. It cannot turn a failed
+crypto operation into success. UDP/TCP framing follows the configured protocol
+so a routed connection need not expose its concrete socket type. Certificate
+framing remains in miekg/dns through the shared connected-datagram adapter.
+An optional ClientConfig.DialContext owns both certificate and encrypted
+connections. With that owner, its context is the sole total budget; native
+callers without a custom dialer retain the two-second certificate dial/I/O
+limits and LocalAddr selection. No cryptographic algorithm changes.
 
 The cancellation regression first proves that the certificate request or real
 encrypted query reached its loopback peer, then cancels the caller. Before the

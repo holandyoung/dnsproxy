@@ -1,0 +1,39 @@
+{
+  "version": "1.0.18",
+  "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "nonce": "17161514131211100f0e0d0c0b0a09080706050403020100",
+  "vectors": [
+    {
+      "length": 0,
+      "ciphertext": "4b693ff78ff984602c2929fd869ae2b8"
+    },
+    {
+      "length": 1,
+      "ciphertext": "b343da58deb392d55a208967b45c0ab433"
+    },
+    {
+      "length": 31,
+      "ciphertext": "a4699c2407fe9396ffc8766c0a8d3de9332bb64f9fe910832c5eaceeecce9d59d8a8cf7cc09764b5a3573238f290db"
+    },
+    {
+      "length": 32,
+      "ciphertext": "f46fd8407a4e8500d00a5115e67c0257332bb64f9fe910832c5eaceeecce9d59d8a8cf7cc09764b5a3573238f290db02"
+    },
+    {
+      "length": 33,
+      "ciphertext": "4e271daa801c68084f04d8fac5c774ce332bb64f9fe910832c5eaceeecce9d59d8a8cf7cc09764b5a3573238f290db02c1"
+    },
+    {
+      "length": 63,
+      "ciphertext": "45802b6bb731b3ced16ce9b85a51a368332bb64f9fe910832c5eaceeecce9d59d8a8cf7cc09764b5a3573238f290db02c110c93e593c8f373ef0f21fd8f06ae2f97973408d011cdc8113b56ee4e4c6"
+    },
+    {
+      "length": 64,
+      "ciphertext": "61fb46a06851f713ceba5b3cf1ad4cb2332bb64f9fe910832c5eaceeecce9d59d8a8cf7cc09764b5a3573238f290db02c110c93e593c8f373ef0f21fd8f06ae2f97973408d011cdc8113b56ee4e4c6ae"
+    },
+    {
+      "length": 65,
+      "ciphertext": "1c72d3bfa1bb598c67ccd4a948e55384332bb64f9fe910832c5eaceeecce9d59d8a8cf7cc09764b5a3573238f290db02c110c93e593c8f373ef0f21fd8f06ae2f97973408d011cdc8113b56ee4e4c6ae22"
+    }
+  ]
+}

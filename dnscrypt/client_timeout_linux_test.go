@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ameshkov/dnsstamps"
 	"github.com/holandyoung/dnsproxy/dnscrypt"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 )
@@ -17,7 +17,7 @@ import (
 func TestClient_CertificateRetainsNativeDialTimeout(t *testing.T) {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	require.NoError(t, err)
-	defer unix.Close(fd)
+	defer func(descriptor int) { _ = unix.Close(descriptor) }(fd)
 	require.NoError(t, unix.Bind(fd, &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}))
 	require.NoError(t, unix.Listen(fd, 0))
 	address, err := unix.Getsockname(fd)
@@ -28,10 +28,10 @@ func TestClient_CertificateRetainsNativeDialTimeout(t *testing.T) {
 	// without Accept, and prove the next handshake cannot complete.
 	held, err := net.DialTimeout("tcp4", target, time.Second)
 	require.NoError(t, err)
-	defer held.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(held.Close)
 	check, err := net.DialTimeout("tcp4", target, 100*time.Millisecond)
 	if check != nil {
-		check.Close()
+		_ = check.Close()
 	}
 	var timeout net.Error
 	require.True(t, errors.As(err, &timeout))

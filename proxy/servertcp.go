@@ -15,6 +15,7 @@ import (
 	"github.com/AdguardTeam/golibs/syncutil"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
 	proxynetutil "github.com/holandyoung/dnsproxy/internal/netutil"
+	"github.com/holandyoung/dnsproxy/proxyutil"
 	"github.com/miekg/dns"
 )
 
@@ -244,9 +245,11 @@ func (p *Proxy) respondTCP(d *DNSContext) error {
 // writePrefixed writes a DNS message to a TCP connection it first writes
 // a 2-byte prefix followed by the message itself.
 func writePrefixed(b []byte, conn net.Conn) (err error) {
-	l := make([]byte, 2)
-	binary.BigEndian.PutUint16(l, uint16(len(b)))
-	_, err = (&net.Buffers{l, b}).WriteTo(conn)
+	prefix, err := proxyutil.LengthPrefix(len(b))
+	if err != nil {
+		return err
+	}
+	_, err = (&net.Buffers{prefix[:], b}).WriteTo(conn)
 
 	return err
 }

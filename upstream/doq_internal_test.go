@@ -20,8 +20,8 @@ import (
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/holandyoung/dnsproxy/proxyutil"
+	"github.com/holandyoung/quic-go"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -406,7 +406,11 @@ func (s *testDoQServer) handleQUICStream(ctx context.Context, stream *quic.Strea
 		return err
 	}
 
-	buf = proxyutil.AddPrefix(buf)
+	prefix, err := proxyutil.LengthPrefix(len(buf))
+	if err != nil {
+		return err
+	}
+	buf = append(prefix[:], buf...)
 	_, err = stream.Write(buf)
 
 	return err

@@ -20,12 +20,12 @@ import (
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
-	"github.com/ameshkov/dnsstamps"
 	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
+	"github.com/holandyoung/quic-go"
+	"github.com/holandyoung/quic-go/qlogwriter"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlogwriter"
 )
 
 // Upstream is an interface for a DNS resolver.  All the methods must be safe
@@ -38,8 +38,7 @@ type Upstream interface {
 	// nil.  state is invocation-local; nil requests only the synchronous
 	// result.  A non-nil state publishes complete-message receipt before
 	// physical cleanup and permits logical expiration without cancellation.
-	// DNSCrypt upstreams reject non-nil state because their native client does
-	// not expose that read boundary.  A state must never be reused.
+	// A state must never be reused.
 	Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error)
 
 	// Address returns the human-readable address of the upstream DNS resolver.
@@ -77,12 +76,18 @@ type NetworkDialer interface {
 // upstream properties.
 type Options struct {
 	// NetworkDialer replaces native bootstrap and dialing for every UDP, TCP,
-	// TLS, HTTPS, and QUIC path, including HTTP/3 probes. Nil uses native dialing.
+	// TLS, HTTPS, QUIC and DNSCrypt path, including HTTP/3 probes and DNSCrypt
+	// certificate acquisition. Nil uses native dialing.
 	NetworkDialer NetworkDialer
 
 	// ServerName overrides the TLS verification name and SNI for DoT, DoH, and
 	// DoQ without changing the dial target. Empty uses the upstream hostname.
 	ServerName string
+
+	// HTTPHost is the HTTP Host/:authority for DoH. Empty uses the URL host.
+	// This keeps virtual-host routing separate from the physical dial target;
+	// ServerName continues to own TLS verification and SNI independently.
+	HTTPHost string
 
 	// Logger is used for logging during parsing and upstream exchange.  If nil,
 	// [slog.Default] is used.
@@ -97,7 +102,7 @@ type Options struct {
 	VerifyConnection func(state tls.ConnectionState) error
 
 	// VerifyDNSCryptCertificate is the callback the DNSCrypt server certificate
-	// will be passed to.  It's called in dnsCrypt.exchangeDNSCrypt.
+	// will be passed to before that certificate can be shared by exchanges.
 	// Upstream.Exchange method returns any error caused by it.
 	VerifyDNSCryptCertificate func(cert *dnscrypt.Certificate) error
 
@@ -138,6 +143,7 @@ func (o *Options) Clone() (clone *Options) {
 	return &Options{
 		NetworkDialer:             o.NetworkDialer,
 		ServerName:                o.ServerName,
+		HTTPHost:                  o.HTTPHost,
 		Bootstrap:                 o.Bootstrap,
 		Timeout:                   o.Timeout,
 		HTTPVersions:              o.HTTPVersions,
@@ -329,9 +335,6 @@ func parseStamp(upsURL *url.URL, opts *Options) (u Upstream, err error) {
 	case dnsstamps.StampProtoTypePlain:
 		return newPlain(&url.URL{Scheme: "udp", Host: stamp.ServerAddrStr}, opts)
 	case dnsstamps.StampProtoTypeDNSCrypt:
-		if opts.NetworkDialer != nil {
-			return nil, fmt.Errorf("DNSCrypt upstream does not support a custom network dialer")
-		}
 		return newDNSCrypt(upsURL, opts), nil
 	case dnsstamps.StampProtoTypeDoH:
 		return newDoH(&url.URL{Scheme: "https", Host: stamp.ProviderName, Path: stamp.Path}, opts)

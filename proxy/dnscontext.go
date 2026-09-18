@@ -7,8 +7,8 @@ import (
 
 	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/holandyoung/dnsproxy/upstream"
+	"github.com/holandyoung/quic-go"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
 )
 
 // DNSContext represents a DNS request message context
@@ -100,16 +100,16 @@ type DNSContext struct {
 
 // LocalAddr returns the actual receiving listener address for every protocol.
 // It is nil only for contexts that did not originate from a network listener.
-func (d *DNSContext) LocalAddr() net.Addr {
+func (dctx *DNSContext) LocalAddr() net.Addr {
 	switch {
-	case d.Conn != nil:
-		return d.Conn.LocalAddr()
-	case d.QUICConnection != nil:
-		return d.QUICConnection.LocalAddr()
-	case d.DNSCryptResponseWriter != nil:
-		return d.DNSCryptResponseWriter.LocalAddr()
-	case d.HTTPRequest != nil:
-		address, _ := d.HTTPRequest.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	case dctx.Conn != nil:
+		return dctx.Conn.LocalAddr()
+	case dctx.QUICConnection != nil:
+		return dctx.QUICConnection.LocalAddr()
+	case dctx.DNSCryptResponseWriter != nil:
+		return dctx.DNSCryptResponseWriter.LocalAddr()
+	case dctx.HTTPRequest != nil:
+		address, _ := dctx.HTTPRequest.Context().Value(http.LocalAddrContextKey).(net.Addr)
 		return address
 	default:
 		return nil

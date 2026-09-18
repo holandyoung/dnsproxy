@@ -18,7 +18,7 @@ type pingResult struct {
 	addrPort netip.AddrPort
 
 	// latency is the duration of dialing process in milliseconds.
-	latency uint
+	latency int64
 
 	// success is true when the dialing succeeded.
 	success bool
@@ -38,13 +38,13 @@ func (f *FastestAddr) schedulePings(
 		if cached == nil {
 			scheduled = true
 			for _, port := range f.pingPorts {
-				go f.pingDoTCP(host, netip.AddrPortFrom(ip, uint16(port)), resCh)
+				go f.pingDoTCP(host, netip.AddrPortFrom(ip, port), resCh)
 			}
 
 			continue
 		}
 
-		if cached.status == 0 && (pr == nil || cached.latencyMsec < pr.latency) {
+		if !cached.failed && (pr == nil || cached.latencyMsec < pr.latency) {
 			pr = &pingResult{
 				addrPort: netip.AddrPortFrom(ip, 0),
 				latency:  cached.latencyMsec,
@@ -144,7 +144,7 @@ func (f *FastestAddr) pingDoTCP(host string, addrPort netip.AddrPort, resCh chan
 		}
 	}
 
-	latency := uint(elapsed.Milliseconds())
+	latency := elapsed.Milliseconds()
 
 	resCh <- &pingResult{
 		addrPort: addrPort,

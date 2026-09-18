@@ -5,12 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/validate"
-	"github.com/ameshkov/dnsstamps"
+	"github.com/jedisct1/go-dnsstamps"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -68,17 +69,26 @@ func (rc *ResolverConfig) Validate() (err error) {
 
 // NewCert generates a signed Certificate to be used by Server.
 func (rc *ResolverConfig) NewCert() (cert *Certificate, err error) {
-	notAfter := time.Now()
+	return rc.newCert(time.Now())
+}
+
+// newCert uses one clock observation for all protocol timestamps.
+func (rc *ResolverConfig) newCert(now time.Time) (cert *Certificate, err error) {
+	notAfter := now
 	if rc.CertificateTTL > 0 {
 		notAfter = notAfter.Add(rc.CertificateTTL)
 	} else {
 		notAfter = notAfter.Add(defaultCertValidity)
 	}
 
+	start, end := now.Unix(), notAfter.Unix()
+	if start < 0 || start > math.MaxUint32 || end < 0 || end > math.MaxUint32 || end <= start {
+		return nil, fmt.Errorf("certificate validity [%d, %d] cannot be represented by DNSCrypt", start, end)
+	}
 	cert = &Certificate{
-		Serial:    uint32(time.Now().Unix()),
-		NotAfter:  uint32(notAfter.Unix()),
-		NotBefore: uint32(time.Now().Unix()),
+		Serial:    uint32(start),
+		NotAfter:  uint32(end),
+		NotBefore: uint32(start),
 		ESVersion: rc.ESVersion,
 	}
 

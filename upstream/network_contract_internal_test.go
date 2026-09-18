@@ -20,12 +20,12 @@ import (
 // Only net.Conn is exposed, as permitted by the route API. In particular a UDP
 // socket's PacketConn methods must not be required from application wrappers.
 type observedRouteConn struct {
-	net.Conn
-	writes   chan []byte
-	done     chan struct{}
-	once     sync.Once
-	mu       sync.Mutex
 	deadline time.Time
+	net.Conn
+	writes chan []byte
+	done   chan struct{}
+	once   sync.Once
+	mu     sync.Mutex
 }
 
 func (c *observedRouteConn) SetDeadline(deadline time.Time) error {
@@ -56,8 +56,8 @@ func (c *observedRouteConn) Close() error {
 }
 
 type observedRoute struct {
-	routedNetwork
 	opened chan *observedRouteConn
+	routedNetwork
 }
 
 func (r *observedRoute) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -103,16 +103,16 @@ func TestNetworkDialerHTTPVersionAllowlist(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		versions   []HTTPVersion
-		serverH2   bool
 		wantProto  int
+		serverH2   bool
 		wantReject bool
 	}{
-		{"h1_to_h1", []HTTPVersion{HTTPVersion11}, false, 1, false},
-		{"h1_to_h2_enabled", []HTTPVersion{HTTPVersion11}, true, 1, false},
-		{"h2_to_h2", []HTTPVersion{HTTPVersion2}, true, 2, false},
-		{"h2_to_h1_rejected", []HTTPVersion{HTTPVersion2}, false, 0, true},
-		{"h1_h2_to_h1", []HTTPVersion{HTTPVersion11, HTTPVersion2}, false, 1, false},
-		{"h1_h2_to_h2", []HTTPVersion{HTTPVersion11, HTTPVersion2}, true, 2, false},
+		{name: "h1_to_h1", versions: []HTTPVersion{HTTPVersion11}, serverH2: false, wantProto: 1, wantReject: false},
+		{name: "h1_to_h2_enabled", versions: []HTTPVersion{HTTPVersion11}, serverH2: true, wantProto: 1, wantReject: false},
+		{name: "h2_to_h2", versions: []HTTPVersion{HTTPVersion2}, serverH2: true, wantProto: 2, wantReject: false},
+		{name: "h2_to_h1_rejected", versions: []HTTPVersion{HTTPVersion2}, serverH2: false, wantProto: 0, wantReject: true},
+		{name: "h1_h2_to_h1", versions: []HTTPVersion{HTTPVersion11, HTTPVersion2}, serverH2: false, wantProto: 1, wantReject: false},
+		{name: "h1_h2_to_h2", versions: []HTTPVersion{HTTPVersion11, HTTPVersion2}, serverH2: true, wantProto: 2, wantReject: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seen := make(chan int, 16)
@@ -131,7 +131,7 @@ func TestNetworkDialerHTTPVersionAllowlist(t *testing.T) {
 				NetworkDialer: route, RootCAs: roots, HTTPVersions: tc.versions, Timeout: time.Second, Logger: testLogger,
 			})
 			require.NoError(t, err)
-			defer u.Close()
+			defer func(closeResource func() error) { _ = closeResource() }(u.Close)
 			for range 3 {
 				query := createTestMessage()
 				response, exchangeErr := u.Exchange(query, nil)
@@ -190,7 +190,7 @@ func TestNetworkDialerDoTExchangeDeadline(t *testing.T) {
 				NetworkDialer: route, RootCAs: srv.rootCAs, Timeout: timeout, Logger: testLogger,
 			})
 			require.NoError(t, err)
-			defer u.Close()
+			defer func(closeResource func() error) { _ = closeResource() }(u.Close)
 			if mode == "pooled" || mode == "retry" {
 				checkUpstream(t, u, "tls://127.0.0.1:1")
 			}
@@ -234,17 +234,17 @@ func TestNetworkDialerDoTExchangeDeadline(t *testing.T) {
 func TestNetworkDialerDoTHandshakeDeadline(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer listener.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(listener.Close)
 	accepted := make(chan net.Conn, 1)
 	go func() { conn, _ := listener.Accept(); accepted <- conn }()
 	route := newObservedRoute(listener.Addr().String())
 	u, err := AddressToUpstream("tls://127.0.0.1:1", &Options{NetworkDialer: route, Timeout: 50 * time.Millisecond, Logger: testLogger})
 	require.NoError(t, err)
-	defer u.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(u.Close)
 	_, err = u.Exchange(createTestMessage(), nil)
 	conn := <-accepted
 	require.NotNil(t, conn)
-	defer conn.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(conn.Close)
 	require.Error(t, err)
 	var netErr net.Error
 	require.ErrorAs(t, err, &netErr)

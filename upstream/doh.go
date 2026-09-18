@@ -23,9 +23,9 @@ import (
 	"github.com/AdguardTeam/golibs/httphdr"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
+	"github.com/holandyoung/quic-go"
+	"github.com/holandyoung/quic-go/http3"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/net/http2"
 )
 
@@ -62,7 +62,8 @@ type dnsOverHTTPS struct {
 	networkDialer NetworkDialer
 
 	// addr is the DNS-over-HTTPS server URL.
-	addr *url.URL
+	addr     *url.URL
+	httpHost string
 
 	// tlsConf is the configuration of TLS.
 	tlsConf *tls.Config
@@ -118,6 +119,7 @@ func newDoH(addr *url.URL, opts *Options) (u Upstream, err error) {
 		networkDialer: opts.NetworkDialer,
 		getDialer:     newDialerInitializer(addr, opts),
 		addr:          addr,
+		httpHost:      opts.HTTPHost,
 		quicConf:      quicConf,
 		quicConfMu:    &sync.Mutex{},
 		tlsConf: &tls.Config{
@@ -287,6 +289,9 @@ func (p *dnsOverHTTPS) exchangeHTTPSClient(
 	httpReq, err := http.NewRequest(method, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating http request to %s: %w", p.addrRedacted, err)
+	}
+	if p.httpHost != "" {
+		httpReq.Host = p.httpHost
 	}
 
 	// Prevent the client from sending User-Agent header, see

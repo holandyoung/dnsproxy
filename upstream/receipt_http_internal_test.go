@@ -64,7 +64,7 @@ func TestReceiptDoHRequiresCompleteDNSBody(t *testing.T) {
 				t.Cleanup(func() { require.NoError(t, u.Close()) })
 				state := NewExchangeState(time.Now().Add(2 * time.Second))
 				finished := make(chan error, 1)
-				go func() { _, err := u.Exchange(createTestMessage(), state); finished <- err }()
+				go func() { _, exchangeErr := u.Exchange(createTestMessage(), state); finished <- exchangeErr }()
 				if mode == "partial at expiry" {
 					select {
 					case <-partial:

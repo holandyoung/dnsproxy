@@ -10,9 +10,9 @@ import (
 
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil/servicetest"
-	"github.com/ameshkov/dnsstamps"
 	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/holandyoung/dnsproxy/dnscrypt/internal/dnscrypttest"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/require"
 )

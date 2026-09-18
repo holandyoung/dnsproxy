@@ -17,8 +17,8 @@ import (
 	"github.com/bluele/gcache"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
 	"github.com/holandyoung/dnsproxy/proxyutil"
+	"github.com/holandyoung/quic-go"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
 )
 
 // NextProtoDQ is the ALPN token for DoQ. During connection establishment,
@@ -347,7 +347,7 @@ func (p *Proxy) handleQUICStream(ctx context.Context, stream *quic.Stream, conn 
 	// Note that we support both the old drafts and the new RFC. In the old
 	// draft DNS messages were not prefixed with the message length.
 	packetLen := binary.BigEndian.Uint16(buf[:2])
-	if packetLen == uint16(n-2) {
+	if int(packetLen) == n-2 {
 		err = req.Unpack(buf[2:n])
 	} else {
 		err = req.Unpack(buf[:n])
@@ -408,7 +408,11 @@ func (p *Proxy) respondQUIC(d *DNSContext) error {
 	var buf []byte
 	switch d.DoQVersion {
 	case DoQv1:
-		buf = proxyutil.AddPrefix(bytes)
+		prefix, prefixErr := proxyutil.LengthPrefix(len(bytes))
+		if prefixErr != nil {
+			return prefixErr
+		}
+		buf = append(prefix[:], bytes...)
 	case DoQv1Draft:
 		buf = bytes
 	default:

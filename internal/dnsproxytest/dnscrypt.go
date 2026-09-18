@@ -12,7 +12,7 @@ import (
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/holandyoung/dnsproxy/dnscrypt"
 
-	"github.com/ameshkov/dnsstamps"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/require"
 )

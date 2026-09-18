@@ -4,9 +4,9 @@ import (
 	"testing"
 
 	"github.com/AdguardTeam/golibs/testutil"
-	"github.com/ameshkov/dnsstamps"
 	"github.com/holandyoung/dnsproxy/dnscrypt"
 	"github.com/holandyoung/dnsproxy/dnscrypt/internal/dnscrypttest"
+	"github.com/jedisct1/go-dnsstamps"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -62,7 +62,7 @@ func TestClient_DialContext(t *testing.T) {
 		_, err := client.DialContext(ctx, "invalid_stamp")
 		testutil.AssertErrorMsg(
 			t,
-			`creating server stamp: stamps are expected to start with sdns://`,
+			`creating server stamp: Stamps are expected to start with "sdns:"`,
 			err,
 		)
 	}))
@@ -85,7 +85,7 @@ func TestClient_ExchangeContext(t *testing.T) {
 		require.NoError(t, err)
 
 		req := dnscrypttest.NewDNSMessage()
-		resp, err := client.ExchangeContext(ctx, req, info)
+		resp, err := client.ExchangeContext(ctx, req, info, nil)
 		require.NoError(t, err)
 
 		dnscrypttest.AssertDefaultDNSMessageResponse(t, resp)
@@ -103,7 +103,7 @@ func TestClient_ExchangeContext(t *testing.T) {
 		require.NoError(t, err)
 
 		req := dnscrypttest.NewDNSMessage()
-		resp, err := client.ExchangeContext(ctx, req, info)
+		resp, err := client.ExchangeContext(ctx, req, info, nil)
 		require.NoError(t, err)
 
 		dnscrypttest.AssertDefaultDNSMessageResponse(t, resp)

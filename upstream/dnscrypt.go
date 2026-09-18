@@ -12,160 +12,144 @@ import (
 	"github.com/miekg/dns"
 )
 
-// dnsCrypt implements the [Upstream] interface for the DNSCrypt protocol.
+// dnsCrypt retains one verified certificate and owns every protocol phase under
+// the same exchange context. Routed certificate, UDP and TCP sockets all use the
+// supplied connection owner; no direct or system-DNS fallback is introduced.
 type dnsCrypt struct {
-	// mu protects client and serverInfo.
-	mu *sync.RWMutex
-
-	// client stores the DNSCrypt client properties.
-	client *dnscrypt.Client
-
-	// resolverInfo stores the DNSCrypt server properties.
-	resolverInfo *dnscrypt.ResolverInfo
-
-	// addr is the DNSCrypt server URL.
-	addr *url.URL
-
-	// logger is used for exchange logging.  It is never nil.
-	logger *slog.Logger
-
-	// verifyCert is a callback that verifies the resolver's certificate.
-	verifyCert func(cert *dnscrypt.Certificate) (err error)
-
-	// timeout is the timeout for the DNS requests.
-	timeout time.Duration
+	ctx               context.Context
+	resolverInfo      *dnscrypt.ResolverInfo
+	refresh           chan struct{}
+	client, tcpClient *dnscrypt.Client
+	addr              *url.URL
+	logger            *slog.Logger
+	verifyCert        func(*dnscrypt.Certificate) error
+	cancel            context.CancelFunc
+	timeout           time.Duration
+	mu                sync.RWMutex
 }
 
-// newDNSCrypt returns a new DNSCrypt Upstream.
-func newDNSCrypt(addr *url.URL, opts *Options) (u *dnsCrypt) {
+func newDNSCrypt(addr *url.URL, opts *Options) *dnsCrypt {
+	ctx, cancel := context.WithCancel(context.Background())
+	udp := &dnscrypt.ClientConfig{Logger: opts.Logger, Proto: dnscrypt.ProtoUDP}
+	if opts.NetworkDialer != nil {
+		udp.DialContext = opts.NetworkDialer.DialContext
+	}
+	tcp := *udp
+	tcp.Proto = dnscrypt.ProtoTCP
 	return &dnsCrypt{
-		mu:         &sync.RWMutex{},
-		addr:       addr,
-		logger:     opts.Logger,
-		verifyCert: opts.VerifyDNSCryptCertificate,
-		timeout:    opts.Timeout,
+		addr: addr, logger: opts.Logger, verifyCert: opts.VerifyDNSCryptCertificate,
+		timeout: opts.Timeout, ctx: ctx, cancel: cancel, refresh: make(chan struct{}, 1),
+		client: dnscrypt.NewClient(udp), tcpClient: dnscrypt.NewClient(&tcp),
 	}
 }
 
-// type check
 var _ Upstream = (*dnsCrypt)(nil)
 
-// Address implements the [Upstream] interface for *dnsCrypt.
 func (p *dnsCrypt) Address() string { return p.addr.String() }
 
-// Exchange implements the [Upstream] interface for *dnsCrypt.
 func (p *dnsCrypt) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error) {
-	if state != nil {
-		if err = state.start(req.Id); err != nil {
-			return nil, err
-		}
-		err = fmt.Errorf("DNSCrypt upstream does not expose a complete-message receipt boundary")
-		state.finish(err)
+	if err = state.start(req.Id); err != nil {
 		return nil, err
 	}
-	ctx := context.Background()
+	defer func() { state.finish(err) }()
+	ctx := p.ctx
 	if p.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.timeout)
 		defer cancel()
 	}
-
-	// Don't wrap the error, because it's informative enough as is.
-	return p.exchangeDNSCrypt(ctx, req)
-}
-
-// Close implements the [Upstream] interface for *dnsCrypt.
-func (p *dnsCrypt) Close() (err error) {
-	return nil
-}
-
-// exchangeDNSCrypt attempts to send the DNS query and returns the response.
-func (p *dnsCrypt) exchangeDNSCrypt(ctx context.Context, req *dns.Msg) (resp *dns.Msg, err error) {
-	var client *dnscrypt.Client
-	var resolverInfo *dnscrypt.ResolverInfo
-	func() {
-		p.mu.RLock()
-		defer p.mu.RUnlock()
-
-		client, resolverInfo = p.client, p.resolverInfo
-	}()
-
-	// Check the client and server info are set and the certificate is not
-	// expired, since any of these cases require a client reset.
-	//
-	// TODO(a.garipov): Consider using [time.Time] for [dnscrypt.Cert.NotAfter].
-	switch {
-	case
-		client == nil,
-		resolverInfo == nil,
-		resolverInfo.ResolverCert.NotAfter < uint32(time.Now().Unix()):
-		client, resolverInfo, err = p.resetClient(ctx)
-		if err != nil {
-			// Don't wrap the error, because it's informative enough as is.
-			return nil, err
-		}
-	default:
-		// Go on.
+	info, err := p.certificate(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	resp, err = client.ExchangeContext(ctx, req, resolverInfo)
-	if resp != nil && resp.Truncated {
-		q := &req.Question[0]
-		p.logger.Debug(
-			"dnscrypt received truncated, falling back to tcp",
-			"addr", p.addr,
-			"question", q,
-		)
-
-		tcpClient := dnscrypt.NewClient(&dnscrypt.ClientConfig{
-			Logger: p.logger,
-			Proto:  dnscrypt.ProtoTCP,
-		})
-
-		resp, err = tcpClient.ExchangeContext(ctx, req, resolverInfo)
+	observer := &dnsCryptReceipt{state: state, request: req, udp: true}
+	resp, err = p.client.ExchangeContext(ctx, req, info, observer)
+	if err == nil && resp != nil && resp.Truncated {
+		p.logger.Debug("dnscrypt received truncated, falling back to tcp", "addr", p.addr, "question", &req.Question[0])
+		observer.udp = false
+		resp, err = p.tcpClient.ExchangeContext(ctx, req, info, observer)
 	}
-	if err == nil && resp != nil && resp.Id != req.Id {
-		err = dns.ErrId
-	}
-
 	return resp, err
 }
 
-// resetClient renews the DNSCrypt client and server properties and also sets
-// those to nil on fail.
-func (p *dnsCrypt) resetClient(
-	ctx context.Context,
-) (client *dnscrypt.Client, ri *dnscrypt.ResolverInfo, err error) {
-	addr := p.Address()
+func (p *dnsCrypt) Close() error {
+	p.cancel()
+	return nil
+}
 
-	defer func() {
-		p.mu.Lock()
-		defer p.mu.Unlock()
+func (p *dnsCrypt) currentCertificate() *dnscrypt.ResolverInfo {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	info := p.resolverInfo
+	if info != nil && info.ResolverCert.VerifyDate() {
+		return info
+	}
+	return nil
+}
 
-		p.client, p.resolverInfo = client, ri
-	}()
-
-	// Use UDP for DNSCrypt upstreams by default.
-	client = dnscrypt.NewClient(&dnscrypt.ClientConfig{
-		Logger: p.logger,
-		Proto:  dnscrypt.ProtoUDP,
-	})
-	ri, err = client.DialContext(ctx, addr)
+func (p *dnsCrypt) certificate(ctx context.Context) (*dnscrypt.ResolverInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if info := p.currentCertificate(); info != nil {
+		return info, nil
+	}
+	// Only the current refresher performs certificate I/O. Waiting callers keep
+	// their own deadlines; a failed refresh does not poison later requests.
+	select {
+	case p.refresh <- struct{}{}:
+		defer func() { <-p.refresh }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if info := p.currentCertificate(); info != nil {
+		return info, nil
+	}
+	info, err := p.client.DialContext(ctx, p.Address())
 	if err != nil {
-		// Trigger client and server info renewal on the next request.
-		return nil, nil, fmt.Errorf("fetching certificate info from %s: %w", addr, err)
+		return nil, fmt.Errorf("fetching certificate info from %s: %w", p.Address(), err)
 	}
-
-	if p.verifyCert == nil {
-		// Go on.
-		return client, ri, nil
+	if p.verifyCert != nil {
+		if err = p.verifyCert(info.ResolverCert); err != nil {
+			return nil, fmt.Errorf("verifying certificate info from %s: %w", p.Address(), err)
+		}
 	}
+	p.mu.Lock()
+	p.resolverInfo = info
+	p.mu.Unlock()
+	return info, nil
+}
 
-	err = p.verifyCert(ri.ResolverCert)
-	if err != nil {
-		// Trigger client and server info renewal on the next request.
-		return nil, nil, fmt.Errorf("verifying certificate info from %s: %w", addr, err)
+// One adapter carries the existing receipt owner through the codec's read and
+// decode boundary. It stores only a candidate ticket, never a second decision.
+type dnsCryptReceipt struct {
+	state   *ExchangeState
+	request *dns.Msg
+	ticket  uint64
+	udp     bool
+}
+
+func (r *dnsCryptReceipt) Received() { r.ticket = r.state.reserveCandidate() }
+
+func (r *dnsCryptReceipt) Decoded(response *dns.Msg, err error) error {
+	if err == nil {
+		switch {
+		case response == nil || !response.Response:
+			err = errDNSProtocol
+		case response.Id != r.request.Id:
+			err = dns.ErrId
+		default:
+			err = validateResponse(r.request, response)
+		}
 	}
-
-	return client, ri, nil
+	if err != nil || r.udp && response.Truncated {
+		r.state.reject(r.ticket)
+	} else {
+		r.state.accept(r.ticket, response)
+	}
+	r.ticket = 0
+	return err
 }

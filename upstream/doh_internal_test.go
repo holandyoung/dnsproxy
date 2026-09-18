@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/AdguardTeam/golibs/testutil"
+	"github.com/holandyoung/quic-go"
+	"github.com/holandyoung/quic-go/http3"
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/require"
 )
 

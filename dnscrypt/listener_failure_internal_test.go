@@ -50,7 +50,7 @@ func TestListenerFailurePrecedesHandlerJoin(t *testing.T) {
 			exchangeDone := make(chan struct{})
 			go func() {
 				defer close(exchangeDone)
-				_, _ = client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("failure.example.", dns.TypeA), info)
+				_, _ = client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("failure.example.", dns.TypeA), info, nil)
 			}()
 			defer func() { cancel(); <-exchangeDone }()
 			select {
@@ -66,8 +66,8 @@ func TestListenerFailurePrecedesHandlerJoin(t *testing.T) {
 			}
 			require.NoError(t, err)
 			select {
-			case err := <-failures:
-				require.ErrorContains(t, err, "dnscrypt-"+string(proto)+" listener "+addr)
+			case failureErr := <-failures:
+				require.ErrorContains(t, failureErr, "dnscrypt-"+string(proto)+" listener "+addr)
 			case <-time.After(time.Second):
 				t.Fatal("listener failure waited for retained handler")
 			}
@@ -92,15 +92,15 @@ func TestListenerFailureNormalStopAndRestart(t *testing.T) {
 	for _, proto := range []Proto{ProtoUDP, ProtoTCP} {
 		t.Run(string(proto), func(t *testing.T) {
 			failures := make(chan error, 10)
-			s, err := NewServer(&ServerConfig{Logger: slog.New(slog.DiscardHandler), ListenerFailures: failures,
+			s, serverErr := NewServer(&ServerConfig{Logger: slog.New(slog.DiscardHandler), ListenerFailures: failures,
 				ProviderName: rc.ProviderName, ResolverCert: cert, Proto: proto, Addr: netip.MustParseAddrPort("127.0.0.1:0")})
-			require.NoError(t, err)
+			require.NoError(t, serverErr)
 			for range 3 {
 				require.NoError(t, s.Start(t.Context()))
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				err := s.Shutdown(ctx)
+				shutdownErr := s.Shutdown(ctx)
 				cancel()
-				require.NoError(t, err)
+				require.NoError(t, shutdownErr)
 			}
 			require.Empty(t, failures)
 		})

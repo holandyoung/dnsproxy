@@ -58,13 +58,13 @@ func TestDNSCryptListenerFailureReachesProxy(t *testing.T) {
 	defer cancel()
 	info, err := client.DialStampContext(ctx, stamp)
 	require.NoError(t, err)
-	answer, err := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("ok.example.", dns.TypeA), info)
+	answer, err := client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("ok.example.", dns.TypeA), info, nil)
 	require.NoError(t, err)
 	require.Equal(t, dns.RcodeSuccess, answer.Rcode)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("held.example.", dns.TypeA), info)
+		_, _ = client.ExchangeContext(ctx, new(dns.Msg).SetQuestion("held.example.", dns.TypeA), info, nil)
 	}()
 	defer func() { unblock(); cancel(); <-done }()
 	select {
@@ -76,12 +76,12 @@ func TestDNSCryptListenerFailureReachesProxy(t *testing.T) {
 	interruptNativeListener(t, netip.MustParseAddrPort(address))
 	conn, err := net.DialTimeout("tcp", address, time.Second)
 	if conn != nil {
-		conn.Close()
+		_ = conn.Close()
 	}
 	require.Error(t, err, "native listener still accepts after socket shutdown")
 	select {
-	case err := <-failures:
-		require.ErrorContains(t, err, "dnscrypt-tcp listener "+address)
+	case failureErr := <-failures:
+		require.ErrorContains(t, failureErr, "dnscrypt-tcp listener "+address)
 	case <-time.After(300 * time.Millisecond):
 		t.Error("Proxy did not receive native DNSCrypt listener failure while handler retained work")
 	}

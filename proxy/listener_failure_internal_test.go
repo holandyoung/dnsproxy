@@ -19,8 +19,8 @@ import (
 // Arm only after a real successful query. Fault notification must not depend
 // on this diagnostic handler returning.
 type failureLogBarrier struct {
-	armed   atomic.Bool
 	release chan struct{}
+	armed   atomic.Bool
 }
 
 func (h *failureLogBarrier) Enabled(context.Context, slog.Level) bool { return true }
@@ -81,7 +81,7 @@ func TestListenerFailuresBeforeDiagnostics(t *testing.T) {
 			}
 			u, err := upstream.AddressToUpstream(endpoint, &upstream.Options{Logger: testLogger, RootCAs: roots, ServerName: tlsServerName, Timeout: time.Second})
 			require.NoError(t, err)
-			defer u.Close()
+			defer func(closeResource func() error) { _ = closeResource() }(u.Close)
 			response, err := u.Exchange(new(dns.Msg).SetQuestion("failure.example.", dns.TypeA), nil)
 			require.NoError(t, err)
 			require.Equal(t, dns.RcodeSuccess, response.Rcode)
@@ -89,8 +89,8 @@ func TestListenerFailuresBeforeDiagnostics(t *testing.T) {
 			barrier.armed.Store(true)
 			require.NoError(t, fail())
 			select {
-			case err := <-failures:
-				require.ErrorContains(t, err, protocol+" listener "+addr)
+			case failureErr := <-failures:
+				require.ErrorContains(t, failureErr, protocol+" listener "+addr)
 			case <-time.After(time.Second):
 				t.Fatal("fatal native listener failure was hidden behind diagnostics")
 			}

@@ -47,7 +47,7 @@ func TestLookupNetIP(t *testing.T) {
 	p, err := New(conf)
 	require.NoError(t, err)
 
-	defer dnsUpstream.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(dnsUpstream.Close)
 	// Now let's try doing some lookups.
 	addrs, err := p.LookupNetIP(context.Background(), "", "dns.google")
 	require.NoError(t, err)

@@ -41,7 +41,7 @@ type FastestAddr struct {
 	ipCache cache.Cache
 
 	// pingPorts are the ports to ping on.
-	pingPorts []uint
+	pingPorts []uint16
 
 	// pingWaitTimeout is the timeout for waiting all the resolved addresses to
 	// be pinged.  Any ping results received after that moment are cached, but
@@ -69,7 +69,7 @@ func New(c *Config) (f *FastestAddr) {
 			MaxSize:   64 * 1024,
 			EnableLRU: true,
 		}),
-		pingPorts: []uint{80, 443},
+		pingPorts: []uint16{80, 443},
 		pinger:    &net.Dialer{Timeout: pingTCPTimeout},
 	}
 

@@ -61,12 +61,22 @@ the application owns its member/group acceptance cutoff through ExchangeState.
 | DoQ completion and response ID | Require one complete frame followed by FIN and reject extra bytes or nonzero wire ID before restoring the caller's ID. The prior frame-only reader accepted incomplete transactions. The original request is no longer mutated. | `TestReceiptDoQRequiresCompleteFrameAndFIN`; [RFC 9250 sections 4.2 and 4.3](https://www.rfc-editor.org/rfc/rfc9250.html#section-4.2) |
 | DoH response boundary | Validate HTTP status, DNS media type and complete bounded body before candidate admission. A prefix, response headers or a body exceeding 65535 bytes is not a complete DNS response. | Native H1/H2/H3 receipt tests and strict response-body tests |
 
-DNSCrypt listeners remain supported. A DNSCrypt upstream with a custom dialer
-is explicitly rejected: its native client cannot use that connection owner.
-HyperCacheDNS does not expose DNSCrypt upstreams.
-Non-nil receipt state is also explicitly rejected for DNSCrypt upstreams: its
-client does not expose a complete-message boundary. DNSCrypt listeners and
-ordinary synchronous upstream exchanges remain supported.
+DNSCrypt certificate acquisition, encrypted UDP and TCP continuation use the
+same optional NetworkDialer and one exchange deadline. Concurrent calls share
+one verified, valid certificate; expired certificates are fetched again under
+the same provider public key and verification callback. Waiting for a refresher
+is cancelable and Close cancels every exchange. A complete ciphertext reserves
+the existing invocation-local ExchangeState before bounded authentication and
+decoding; bad authentication, ID, question or UDP truncation releases it before
+any continuation. A final answer publishes before physical Close. The adopted
+client changes its sole exchange signature to carry an optional per-call
+ResponseObserver; no legacy overload or second receipt owner remains.
+Evidence: TestDNSCryptRoutedReceiptAndTCPContinuation,
+TestDNSCryptConcurrentCertificateRenewal, TestDNSCryptReceiptBeforePhysicalClose,
+TestDNSCryptCloseCancelsCertificateAndEncryptedWork,
+TestDNSCryptOneBudgetCoversCertificateAndTCP,
+TestDNSCryptRoutedCertificateHasNoNativeCeiling and
+TestDNSCryptInvalidReplyCannotPublishReceipt.
 
 ## Logical receipt and physical completion
 
@@ -111,9 +121,22 @@ are separate assertions.
 
 ## Verification and delivery
 
-`go.mod` owns the Go version. `sh scripts/check.sh` is the same local, PR and
-master gate: formatting, module integrity, vet, the full shuffled/repeated race
-suite and vulnerability scanning. Protocol conformance uses real local servers
+`go.mod` owns the Go version and native tool versions. `sh scripts/check.sh`
+(`make check`) is the single local, hook, PR and master gate: gofmt, module
+integrity, vet and staticcheck across Darwin/FreeBSD/Linux/OpenBSD/Windows,
+nilness, ineffassign, unparam, fieldalignment, strict shadow, errcheck, gosec,
+ShellCheck, JSON/YAML validation, the full shuffled/repeated race suite and
+vulnerability scanning. ShellCheck and jq are explicit CI prerequisites.
+The old duplicate dispatchers, Make targets and their unsupported POSIX-shell
+pipefail options are retired together. Go's `work` and `tool` patterns are
+native supported features; they were not private tooling. The old lint script
+contained valid semantic checks, which remain in the single gate. Staticcheck
+is updated to v0.8.1 because the older analyzer panics on Go 1.27 syntax.
+Fork style follows gofmt and semantic analyzers: inherited filename bans,
+standard-library import bans, arbitrary complexity thresholds, spelling and
+alternate source/Markdown formatters are retired, not treated as evidence of
+correctness. No vulnerability or semantic rule is disabled globally.
+Protocol conformance uses real local servers
 and certificates, without assumptions about public providers or reserved IPs.
 No failed assertion is converted into a skip.
 Inherited live-provider tests now use local native DNS/TLS/HTTP/DNSCrypt
@@ -155,3 +178,66 @@ original Unlicense, exact changes, rejected wrapper approach and real TCP
 counterexamples. All client, proxy, command and test imports use that package;
 the previous external dependency is removed. Shutdown closes accepted sockets
 before joining work, including certificate-handshake writers outside middleware.
+
+## Stamp codec and HTTP authority
+
+The sole stamp codec is jedisct1/go-dnsstamps at
+6579dc73e4a24adff7def08165a50d81609f4759 (MIT). It replaces the
+ameshkov v1.0.3 codec across client, server, upstream and test callers; no
+compatibility adapter remains. The former codec injected obsolete TLS/QUIC
+IP ports (843/784) and rejected standardized optional bootstrap fields. The
+maintained codec validates physical IP and provider port separately. Unsupported
+relay/oblivious protocols remain rejected by the native upstream factory.
+
+Options.HTTPHost carries HTTP Host/:authority independently of URL dial target
+and TLS ServerName. Empty preserves native URL authority. This is needed when a
+stamp pins a physical IP but addresses a virtual HTTP service; it does not
+disable TLS verification. TestDoHHTTPAuthorityIsIndependentOfDialAndTLS covers
+actual H1, H2 and H3 exchanges and option cloning. HyperCacheDNS's compiler owns
+stamp pin admission and its egress TLS verification callback; merely decoding a
+stamp in the generic upstream parser does not establish pin enforcement.
+
+## Frame, cache and certificate representation boundaries
+
+The QUIC dependency uses the temporary `github.com/holandyoung/quic-go` module
+for synchronized peer-parameter publication and 0-RTT/datagram generation
+ownership. `go.mod` alone owns its immutable pin. The application must consume
+the same module and revision, without production replace directives or a second
+official QUIC module. Follow the [fork maintenance and exit rules](https://github.com/holandyoung/quic-go/blob/hcdns/PATCHES.md):
+inspect official releases and actual source before each product release or
+dependency update; once equivalent official behavior passes the original
+race/0-RTT/consumer regressions, switch both consumers back and retire the patches.
+
+`proxyutil.LengthPrefix` is the sole checked 16-bit frame encoder; the unchecked
+`AddPrefix` API is removed. TCP retains scatter/gather writes without copying
+the complete payload. DoQ rejects oversized packed requests before opening a
+stream. DNSCrypt retains ErrQueryTooLarge for that rejection. Cache publication
+checks both DNS Pack errors and the encoded length instead of storing corrupt
+records. Legal frame bytes and complete-message/FIN receipt rules are unchanged.
+
+The optional native caches use signed 64-bit Unix expiration seconds, and
+fastip uses signed 64-bit milliseconds and boolean failure state. Large values
+no longer wrap into expired or faster entries. Their private in-memory format
+has no compatibility reader or disk migration. Fixed byte budgets are unchanged:
+fastip payloads grow from 7 to 17 bytes, DNS cache headers from 6 to 10 bytes,
+so these optional caches fit fewer entries in the same budget. Existing TTL
+admission rules are unchanged. Subnet validation owns family/prefix bounds for
+both caching and pending-request keys; invalid masks cannot alias a global
+entry. Nil-mask global entries and valid IPv4/IPv6 prefixes remain supported.
+
+Certificate generation observes one clock instant and rejects validity periods
+outside the DNSCrypt unsigned 32-bit seconds domain. Verification widens wire
+timestamps rather than narrowing the host clock; endpoints remain inclusive.
+The protocol's secretbox construction is retained. Poly1305's deprecation and
+two proven 32-byte XOR bounds have precise local analyzer explanations, with
+independent libsodium 1.0.18 vectors (0/1/31/32/33/63/64/65 bytes), alias tests
+and every-byte tamper rejection. It must not be replaced with RFC 8439 AEAD.
+See [the DNSCrypt protocol](https://dnscrypt.info/protocol/) and
+[libsodium's native construction](https://github.com/jedisct1/libsodium/blob/1.0.18/src/libsodium/crypto_secretbox/xchacha20poly1305/secretbox_xchacha20poly1305.c).
+
+Evidence: TestLengthPrefixBounds, TestTCPRejectsOversizedBeforeWrite,
+TestDoQRejectsOversizedBeforeOpeningStream,
+TestCacheRejectsInvalidWireAndPreservesLargeTTL, TestCacheWideLatencyAndTime,
+TestCacheSubnetRejectsInvalidWithoutGlobalCollision,
+TestCertificateProtocolTimeBounds and TestLibsodiumSecretboxVectors. These
+targeted checks do not replace full-gate or application performance acceptance.

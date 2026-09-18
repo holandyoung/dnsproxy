@@ -21,10 +21,10 @@ import (
 type pipelineTraceKey struct{}
 
 type pipelineTrace struct {
-	stages []string
-	local  string
 	err    error
 	final  *dns.Msg
+	local  string
+	stages []string
 }
 
 // One Proxy owns all encrypted listeners; the same entry and final-response
@@ -50,11 +50,11 @@ func TestRequestPipelineAcrossEncryptedListeners(t *testing.T) {
 		RequestMiddleware: func(next Handler) Handler {
 			return HandlerFunc(func(ctx context.Context, p *Proxy, d *DNSContext) error {
 				trace := &pipelineTrace{stages: []string{"entry"}, local: d.LocalAddr().String()}
-				err := next.ServeDNS(context.WithValue(ctx, pipelineTraceKey{}, trace), p, d)
+				handlerErr := next.ServeDNS(context.WithValue(ctx, pipelineTraceKey{}, trace), p, d)
 				trace.stages = append(trace.stages, "exit")
-				trace.err = err
+				trace.err = handlerErr
 				observed <- *trace
-				return err
+				return handlerErr
 			})
 		},
 		ResponseHandler: HandlerFunc(func(ctx context.Context, _ *Proxy, d *DNSContext) error {
@@ -93,11 +93,11 @@ func TestRequestPipelineAcrossEncryptedListeners(t *testing.T) {
 				defer cancel()
 				info, dialErr := client.DialStampContext(ctx, stamp)
 				require.NoError(t, dialErr)
-				exchange = func(r *dns.Msg) (*dns.Msg, error) { return client.ExchangeContext(ctx, r, info) }
+				exchange = func(r *dns.Msg) (*dns.Msg, error) { return client.ExchangeContext(ctx, r, info, nil) }
 			} else {
 				u, parseErr := upstream.AddressToUpstream(tc.address, &upstream.Options{RootCAs: roots, ServerName: tlsServerName, Logger: testLogger, Timeout: time.Second, HTTPVersions: tc.versions})
 				require.NoError(t, parseErr)
-				defer u.Close()
+				defer func(closeResource func() error) { _ = closeResource() }(u.Close)
 				exchange = func(r *dns.Msg) (*dns.Msg, error) { return u.Exchange(r, nil) }
 			}
 			for _, qtype := range []uint16{dns.TypeA, dns.TypeANY} {
@@ -211,7 +211,7 @@ func TestRequestPipelineCoversNativeResponses(t *testing.T) {
 					binary.BigEndian.PutUint16(wire[4:6], 1) // Claims one absent question.
 					conn, dialErr := net.DialTimeout("udp", address, time.Second)
 					require.NoError(t, dialErr)
-					defer conn.Close()
+					defer func(closeResource func() error) { _ = closeResource() }(conn.Close)
 					require.NoError(t, conn.SetDeadline(time.Now().Add(time.Second)))
 					_, err = conn.Write(wire)
 					require.NoError(t, err)
@@ -287,10 +287,10 @@ func TestRequestPipelineObservesUDPWriteFailure(t *testing.T) {
 func TestRequestPipelineObservesTCPWriteFailure(t *testing.T) {
 	listener, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(localhostAnyPort))
 	require.NoError(t, err)
-	defer listener.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(listener.Close)
 	client, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
 	require.NoError(t, err)
-	defer client.Close()
+	defer func(closeResource func() error) { _ = closeResource() }(client.Close)
 	server, err := listener.Accept()
 	require.NoError(t, err)
 	require.NoError(t, server.Close())

@@ -50,7 +50,7 @@ func TestServer_UDPTruncateMessage(t *testing.T) {
 	require.NotNil(t, ri)
 
 	m := dnscrypttest.NewDNSMessage()
-	res, err := client.ExchangeContext(ctx, m, ri)
+	res, err := client.ExchangeContext(ctx, m, ri, nil)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 
@@ -82,7 +82,7 @@ func TestServer_UDPEDNS0_NoTruncate(t *testing.T) {
 			Class:  2000,
 		},
 	})
-	res, err := client.ExchangeContext(ctx, m, ri)
+	res, err := client.ExchangeContext(ctx, m, ri, nil)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 
@@ -149,7 +149,7 @@ func testThisServerRespondMessages(
 		m := dnscrypttest.NewDNSMessage()
 
 		var res *dns.Msg
-		res, err = client.ExchangeConnContext(ctx, conn, m, ri)
+		res, err = client.ExchangeConnContext(ctx, conn, m, ri, nil)
 		require.NoError(tb, err)
 		dnscrypttest.AssertDefaultDNSMessageResponse(tb, res)
 	}
@@ -202,7 +202,7 @@ func benchmarkServe(b *testing.B, proto dnscrypt.Proto) {
 	b.ReportAllocs()
 	for b.Loop() {
 		m := dnscrypttest.NewDNSMessage()
-		resp, err = client.ExchangeConnContext(ctx, conn, m, ri)
+		resp, err = client.ExchangeConnContext(ctx, conn, m, ri, nil)
 	}
 
 	require.NoError(b, err)
