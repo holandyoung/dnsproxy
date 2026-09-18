@@ -9,6 +9,7 @@ import (
 
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
+	"github.com/holandyoung/dnsproxy/diagnostic"
 )
 
 // Resolver resolves the hostnames to IP addresses.  Note, that [net.Resolver]
@@ -80,8 +81,9 @@ func recoverAndLog(ctx context.Context, resCh chan<- any) {
 		l = slog.Default()
 	}
 
-	l.ErrorContext(ctx, "recovered panic", slogutil.KeyError, err)
-	slogutil.PrintStack(ctx, l, slog.LevelError)
+	if l.Enabled(ctx, slog.LevelError) {
+		l.LogAttrs(ctx, slog.LevelError, "recovered panic", slog.Any("panic", diagnostic.RecoveredPanic{Value: err}))
+	}
 
 	resCh <- err
 }

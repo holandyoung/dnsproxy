@@ -12,6 +12,7 @@ import (
 	"github.com/AdguardTeam/golibs/errors"
 
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
+	"github.com/holandyoung/dnsproxy/diagnostic"
 	"github.com/miekg/dns"
 )
 
@@ -76,7 +77,7 @@ func writeTCPResponse(message []byte, conn net.Conn) error {
 // goroutine and to stop it you need to close the listener or call
 // [Server.Shutdown].
 func (s *Server) serveTCP(ctx context.Context) (err error) {
-	defer slogutil.RecoverAndLog(ctx, s.logger)
+	defer diagnostic.RecoverAndLog(ctx, s.logger)
 
 	s.logger.InfoContext(ctx, "entering dnscrypt tcp listening loop")
 
@@ -135,15 +136,16 @@ func (s *Server) serveTCPLoop(
 	s.tcpConns[conn] = struct{}{}
 
 	tcpWg.Go(func() {
-		defer slogutil.RecoverAndLog(ctx, s.logger)
-
+		defer diagnostic.RecoverAndLog(ctx, s.logger)
+		// Release the accepted socket and its ownership on every exit, before
+		// panic presentation can block in a synchronous diagnostic handler.
+		defer func() {
+			_ = conn.Close()
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			delete(s.tcpConns, conn)
+		}()
 		_ = s.handleTCPConnection(ctx, conn, certTxt)
-		_ = conn.Close()
-
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		delete(s.tcpConns, conn)
 	})
 
 	return false, nil

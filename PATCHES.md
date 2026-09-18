@@ -8,7 +8,7 @@ fork revision directly; it does not replace the upstream module at build time.
 ## Required semantics and deviations
 
 DNS message diagnostics use one structured debug record with direction and the
-complete borrowed `DNSMessage` value; the former eager `String`/per-line dump is retired.
+complete borrowed `diagnostic.DNSMessage` value; the former eager `String`/per-line dump is retired.
 The Enabled check precedes all message processing, including at info level.
 The synchronous handler consumes the message during Handle. An asynchronous
 handler must recognize this typed value before resolving LogValuer, reserve
@@ -29,6 +29,43 @@ prefixes remain construction-time metadata. TestRequestDiagnosticsHavePerRecordO
 first completes a real UDP exchange and a native proxied HTTP handler request,
 then verifies that both diagnostic paths retain their attributes without
 creating child handlers that lack a capacity-admission/release lifetime.
+
+The shared `diagnostic` package also owns `RecoveredPanic` and the directly
+deferred recover helper used by proxy and DNSCrypt. It replaces the eager
+golibs stack/per-line presentation at those same recovery boundaries, preserving
+recovery, return and cleanup behavior even when ERROR output is disabled. One
+structured record carries the complete value and native current-goroutine stack.
+Standard synchronous slog handlers resolve it directly. Retaining handlers must
+reserve capacity before snapshot/capture and must capture the stack while still
+in the recovering goroutine. Formatting it later would capture a worker stack.
+No logger queue or application-specific budget is added here; application
+acceptance owns bounds and loss decisions. `proxy.DNSMessage` is removed without
+an alias; both values have one shared package independent of protocol servers.
+The bootstrap parallel resolver retains its channel-result recovery boundary and
+the native FromRecovered conversion needed by callers; only its diagnostic value
+uses the same shared package. Disabled logging cannot suppress that error result.
+
+Recovery also closes two inherited ownership gaps: DNSCrypt TCP workers defer
+accepted-socket close and registry removal before recovery logging; a handler
+panic no longer retains the socket until Shutdown. Proxy.LookupNetIP now recovers
+each address-family result before its sole buffered channel send, preserving the
+original panic error while allowing the other family to succeed. Cancellation
+returns promptly, pre-canceled calls start no work, and already-started workers
+can publish and exit after the caller leaves; native I/O keeps its existing
+upstream timeout and shutdown owner. Real encrypted TCP panic/healthy follow-up,
+dual-family panic/partial success, and synctest cancellation/drain cover these
+boundaries. Socket-cancellation tests inspect the exact peer-observed native
+socket's closed state; a fresh bind of its old ephemeral port races unrelated
+allocations and is not a reliable ownership assertion.
+
+The inherited pending-request test released its upstream when handlers entered,
+before every request had actually joined the pending wave. A forced late Resolve
+reproduces its false single-exchange assertion and recovered-panic/EOF failure.
+The replacement uses Go's native [testing/synctest](https://go.dev/pkg/testing/synctest/)
+barrier through the real Resolve path: all 100 calls must block, share exactly one
+exchange and preserve caller IDs; an uncached later call must start a new exchange.
+A separate real TCP test forces that late arrival and verifies both replies.
+No pending-request production behavior, time budget or gate is weakened.
 
 Bootstrap preserves the application's stricter existing answer policy before
 `UpstreamResolver` reduces a DNS message to addresses: QR, opcode, ID, the exact

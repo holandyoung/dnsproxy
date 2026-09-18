@@ -15,6 +15,7 @@ import (
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/service"
 	"github.com/AdguardTeam/golibs/validate"
+	"github.com/holandyoung/dnsproxy/diagnostic"
 	"github.com/miekg/dns"
 )
 
@@ -202,7 +203,7 @@ func (s *Server) Start(ctx context.Context) (err error) {
 	// worker group is joined before done, so Shutdown never races a later Add.
 	go func() {
 		defer close(done)
-		defer slogutil.RecoverAndLog(ctx, s.logger)
+		defer diagnostic.RecoverAndLog(ctx, s.logger)
 		var serveErr error
 		if s.proto == ProtoTCP {
 			serveErr = s.serveTCP(ctx)

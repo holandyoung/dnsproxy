@@ -2,6 +2,7 @@ package dnscrypt_test
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"sync"
 	"testing"
@@ -62,7 +63,16 @@ func TestClient_CertificateCancellationClosesRealSocket(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
-			client := newTestClient(&dnscrypt.ClientConfig{Proto: protocol})
+			connections := make(chan net.Conn, 1)
+			client := dnscrypt.NewClient(&dnscrypt.ClientConfig{Proto: protocol, Logger: slog.New(slog.DiscardHandler),
+				DialContext: func(dialCtx context.Context, network, endpoint string) (net.Conn, error) {
+					conn, err := (&net.Dialer{}).DialContext(dialCtx, network, endpoint)
+					if err == nil {
+						connections <- conn
+					}
+					return conn, err
+				},
+			})
 			finished := make(chan error, 1)
 			go func() {
 				_, err := client.DialStampContext(ctx, dnsstamps.ServerStamp{ServerAddrStr: address, ProviderName: prefixedHostname, Proto: dnsstamps.StampProtoTypeDNSCrypt})
@@ -74,6 +84,8 @@ func TestClient_CertificateCancellationClosesRealSocket(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("certificate request did not reach real peer")
 			}
+			original := <-connections
+			require.Equal(t, peer.String(), original.LocalAddr().String(), "inspect the real socket observed by the certificate peer")
 			cancel()
 			select {
 			case err := <-finished:
@@ -82,11 +94,9 @@ func TestClient_CertificateCancellationClosesRealSocket(t *testing.T) {
 				t.Fatal("canceled certificate acquisition retained socket until its deadline")
 			}
 			if protocol == dnscrypt.ProtoUDP {
-				// The peer-observed source port is reusable only after the client
-				// has physically closed its original UDP socket.
-				c, err := net.ListenPacket("udp4", peer.String())
-				require.NoError(t, err)
-				require.NoError(t, c.Close())
+				// Inspect this exact native socket. Rebinding its old source port
+				// races unrelated ephemeral allocations after successful Close.
+				require.ErrorIs(t, original.SetReadDeadline(time.Now().Add(time.Second)), net.ErrClosed)
 				require.NoError(t, <-peerDone)
 			} else {
 				select {

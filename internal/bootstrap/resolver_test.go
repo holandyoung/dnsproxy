@@ -1,17 +1,61 @@
 package bootstrap_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"net/netip"
 	"strings"
 	"testing"
 
+	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/holandyoung/dnsproxy/internal/bootstrap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestParallelRecoveryKeepsErrorResultWhenDiagnosticsAreDisabled(t *testing.T) {
+	for _, level := range []slog.Level{slog.LevelError, slog.LevelError + 1} {
+		t.Run(level.String(), func(t *testing.T) {
+			var output bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: level}))
+			ctx := slogutil.ContextWithLogger(t.Context(), logger)
+			want := errors.New("complete bootstrap panic")
+			resolver := &testResolver{onLookupNetIP: func(context.Context, string, string) ([]netip.Addr, error) {
+				panic(want)
+			}}
+			addrs, err := (bootstrap.ParallelResolver{resolver, resolver}).LookupNetIP(ctx, "ip", "panic.example")
+			if len(addrs) != 0 || !errors.Is(err, want) {
+				t.Fatalf("recovery did not publish the native error result: %v %v", addrs, err)
+			}
+			if level > slog.LevelError {
+				if output.Len() != 0 {
+					t.Fatalf("disabled panic created output: %s", output.Bytes())
+				}
+				return
+			}
+			decoder := json.NewDecoder(&output)
+			for range 2 {
+				var record struct{ Panic struct{ Err, Stack string } }
+				if decodeErr := decoder.Decode(&record); decodeErr != nil {
+					t.Fatal(decodeErr)
+				}
+				if record.Panic.Err != want.Error() || !strings.Contains(record.Panic.Stack, "bootstrap.lookupAsync") {
+					t.Fatalf("bootstrap panic record lost original value/stack: %+v", record)
+				}
+			}
+			var extra any
+			if decodeErr := decoder.Decode(&extra); !errors.Is(decodeErr, io.EOF) {
+				t.Fatalf("panic produced extra records: %v %v", extra, decodeErr)
+			}
+		})
+	}
+}
 
 // testResolver is the [Resolver] interface implementation for testing purposes.
 //

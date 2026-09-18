@@ -12,6 +12,7 @@ import (
 
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
+	"github.com/holandyoung/dnsproxy/diagnostic"
 	"github.com/miekg/dns"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -77,7 +78,7 @@ func (w *udpResponseWriter) WriteMsg(ctx context.Context, m *dns.Msg) (err error
 // serveUDP reads and handles UDP messages.  It blocks the calling goroutine and
 // to stop it you need to close the listener or call [Server.Shutdown].
 func (s *Server) serveUDP(ctx context.Context) (err error) {
-	defer slogutil.RecoverAndLog(ctx, s.logger)
+	defer diagnostic.RecoverAndLog(ctx, s.logger)
 
 	udpWg := &sync.WaitGroup{}
 	defer udpWg.Wait()
@@ -131,7 +132,7 @@ func (s *Server) serveUDPLoop(
 	}
 
 	udpWg.Go(func() {
-		defer slogutil.RecoverAndLog(ctx, s.logger)
+		defer diagnostic.RecoverAndLog(ctx, s.logger)
 
 		s.serveUDPMsg(ctx, b, certTxt, sess)
 	})
