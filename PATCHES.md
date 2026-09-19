@@ -149,6 +149,32 @@ network operation; the application still owns tracking and draining its workers
 and physical resources. A later cleanup error is returned by `Exchange`, and
 does not replace an already accepted response.
 
+DoH also joins request-associated native TLS/QUIC setup before `Exchange`
+returns. A native HTTP timeout can finish while its asynchronous TLS callback
+still runs; returning from RoundTrip or closing idle connections does not join
+that callback. A private invocation scope registers actual dial work, rejects
+late admission after sealing and carries the original HTTP request deadline
+through the native transport's detached dial context. The request context alone
+owns the timeout; zero still disables it. Final failures publish through the
+existing receipt before physical retirement, without prematurely finalizing an
+attempt that is still eligible for native retry.
+
+HTTP/3 `DialEarly` retains 0-RTT: it returns the early connection while transferring
+the same work reference to the real handshake-complete or connection-exit
+signal. Request or dial-context cancellation is not physical completion and
+does not close a connection borrowed by other requests. Auxiliary H3 preference
+probes are joined too. Client replacement compares the failed client identity;
+a late failure cannot retire its successor. Native Close seals client admission,
+and retiring the old client never holds the shared publication mutex.
+Trusted native TLS, HTTP/3 timeout and resumed-handshake fixtures verify these
+boundaries, alongside the existing full-body receipt and 0-RTT tests. Pooled
+connections still belong to the upstream owner, not to individual requests.
+
+The existing [Go HTTP transport](https://go.dev/src/net/http/transport.go)
+and [official dnsproxy DoH implementation](https://github.com/AdguardTeam/dnsproxy/blob/master/upstream/doh.go)
+were checked before this change. Reuse of those transports is retained; the
+fork adds the missing invocation ownership rather than a second HTTP stack.
+
 Receipt observation and expiry serialize on one short state lock. The clock is
 read there immediately after complete native read and before decoding. This is
 a software observation boundary, not a guarantee about physical packet arrival

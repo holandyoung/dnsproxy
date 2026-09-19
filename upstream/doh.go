@@ -73,8 +73,11 @@ type dnsOverHTTPS struct {
 	// Clients are safe for concurrent use by multiple goroutines.
 	client *http.Client
 
-	// clientMu protects client.
-	clientMu *sync.Mutex
+	// clientMu protects client publication and close admission. Native cleanup
+	// never holds this lock; closeDone publishes the terminal closeErr.
+	clientMu  *sync.Mutex
+	closeDone chan struct{}
+	closeErr  error
 
 	// logger is used for exchange logging.  It is never nil.
 	logger *slog.Logger
@@ -92,6 +95,7 @@ type dnsOverHTTPS struct {
 
 	// timeout is used in HTTP client and for H3 probes.
 	timeout time.Duration
+	closed  bool
 }
 
 // newDoH returns the DNS-over-HTTPS Upstream.
@@ -164,16 +168,17 @@ func (p *dnsOverHTTPS) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.M
 	if err = state.start(req.Id); err != nil {
 		return nil, err
 	}
-	defer func() { state.finish(err) }()
+	work := new(httpWork)
+	defer func() { state.finish(err); work.join() }()
 	// Check if there was already an active client before sending the request.
 	// We'll only attempt to re-connect if there was one.
-	client, isCached, err := p.getClient()
+	client, isCached, err := p.getClient(work)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init http client: %w", err)
 	}
 
 	// Make the first attempt to send the DNS query.
-	resp, err = p.exchangeHTTPS(client, req, state)
+	resp, err = p.exchangeHTTPS(client, req, state, work)
 
 	// Make up to 2 attempts to re-create the HTTP client and send the request
 	// again.  There are several cases (mostly, with QUIC) where this workaround
@@ -181,17 +186,20 @@ func (p *dnsOverHTTPS) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.M
 	// the case when the connection was closed (due to inactivity for example)
 	// AND the server refuses to open a 0-RTT connection.
 	for i := 0; isCached && p.shouldRetry(err) && i < 2; i++ {
-		client, err = p.resetClient(err)
+		client, err = p.resetClient(client, err, work)
 		if err != nil {
 			return nil, fmt.Errorf("failed to reset http client: %w", err)
 		}
 
-		resp, err = p.exchangeHTTPS(client, req, state)
+		resp, err = p.exchangeHTTPS(client, req, state, work)
 	}
 
 	if err != nil {
+		// No retry remains. Publish the logical failure before retiring a
+		// transport that may still be joining TLS/QUIC setup or body work.
+		state.finish(err)
 		// If the request failed anyway, make sure we don't use this client.
-		_, resErr := p.resetClient(err)
+		_, resErr := p.resetClient(client, err, work)
 
 		return nil, errors.WithDeferred(err, resErr)
 	}
@@ -202,14 +210,23 @@ func (p *dnsOverHTTPS) Exchange(req *dns.Msg, state *ExchangeState) (resp *dns.M
 // Close implements the Upstream interface for *dnsOverHTTPS.
 func (p *dnsOverHTTPS) Close() (err error) {
 	p.clientMu.Lock()
-	defer p.clientMu.Unlock()
-
-	runtime.SetFinalizer(p, nil)
-
-	if p.client != nil {
-		err = p.closeClient(p.client)
+	if p.closed {
+		done := p.closeDone
+		p.clientMu.Unlock()
+		<-done
+		return p.closeErr
 	}
-
+	p.closed = true
+	p.closeDone = make(chan struct{})
+	client := p.client
+	p.client = nil
+	runtime.SetFinalizer(p, nil)
+	p.clientMu.Unlock()
+	if client != nil {
+		err = p.closeClient(client)
+	}
+	p.closeErr = err
+	close(p.closeDone)
 	return err
 }
 
@@ -227,7 +244,7 @@ func (p *dnsOverHTTPS) closeClient(client *http.Client) (err error) {
 
 // exchangeHTTPS logs the request and its result and calls exchangeHTTPSClient.
 // client and req must not be nil.
-func (p *dnsOverHTTPS) exchangeHTTPS(client *http.Client, req *dns.Msg, state *ExchangeState) (resp *dns.Msg, err error) {
+func (p *dnsOverHTTPS) exchangeHTTPS(client *http.Client, req *dns.Msg, state *ExchangeState, work *httpWork) (resp *dns.Msg, err error) {
 	n := networkTCP
 	if isHTTP3(client) {
 		n = networkUDP
@@ -248,7 +265,7 @@ func (p *dnsOverHTTPS) exchangeHTTPS(client *http.Client, req *dns.Msg, state *E
 	// See https://www.rfc-editor.org/rfc/rfc8484.html.
 	binary.BigEndian.PutUint16(buf, 0)
 
-	resp, err = p.exchangeHTTPSClient(client, req, buf, state)
+	resp, err = p.exchangeHTTPSClient(client, req, buf, state, work)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging: %w", err)
 	}
@@ -264,6 +281,7 @@ func (p *dnsOverHTTPS) exchangeHTTPSClient(
 	req *dns.Msg,
 	buf []byte,
 	state *ExchangeState,
+	work *httpWork,
 ) (resp *dns.Msg, err error) {
 	// It appears, that GET requests are more memory-efficient with Golang
 	// implementation of HTTP/2.
@@ -286,7 +304,16 @@ func (p *dnsOverHTTPS) exchangeHTTPSClient(
 		RawQuery: q.Encode(),
 	}
 
-	httpReq, err := http.NewRequest(method, u.String(), nil)
+	requestCtx := context.Background()
+	var cancel context.CancelFunc
+	if p.timeout > 0 {
+		requestCtx, cancel = context.WithTimeout(requestCtx, p.timeout)
+	} else {
+		requestCtx, cancel = context.WithCancel(requestCtx)
+	}
+	defer cancel()
+	requestCtx = context.WithValue(requestCtx, httpRequestScopeKey{}, httpRequestScope{requestCtx, work})
+	httpReq, err := http.NewRequestWithContext(requestCtx, method, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating http request to %s: %w", p.addrRedacted, err)
 	}
@@ -414,9 +441,19 @@ func (p *dnsOverHTTPS) shouldRetry(err error) (ok bool) {
 // resetClient triggers re-creation of the *http.Client that is used by this
 // upstream.  This method accepts the error that caused resetting client as
 // depending on the error we may also reset the QUIC config.
-func (p *dnsOverHTTPS) resetClient(resetErr error) (client *http.Client, err error) {
+func (p *dnsOverHTTPS) resetClient(failed *http.Client, resetErr error, work *httpWork) (client *http.Client, err error) {
 	p.clientMu.Lock()
-	defer p.clientMu.Unlock()
+	if p.closed {
+		p.clientMu.Unlock()
+		return nil, net.ErrClosed
+	}
+	if p.client != nil && p.client != failed {
+		// A different exchange has already replaced this failed generation.
+		// A late failure must never close its successor's healthy connection.
+		client = p.client
+		p.clientMu.Unlock()
+		return client, nil
+	}
 
 	if errors.Is(resetErr, quic.Err0RTTRejected) {
 		// Reset the TokenStore only if 0-RTT was rejected.
@@ -424,6 +461,11 @@ func (p *dnsOverHTTPS) resetClient(resetErr error) (client *http.Client, err err
 	}
 
 	oldClient := p.client
+	p.logger.Debug("recreating the http client", slogutil.KeyError, resetErr)
+	p.client, err = p.createClient(work)
+	client = p.client
+	p.clientMu.Unlock()
+	// Physical retirement cannot hold the shared client's publication lock.
 	if oldClient != nil {
 		closeErr := p.closeClient(oldClient)
 		if closeErr != nil {
@@ -431,10 +473,7 @@ func (p *dnsOverHTTPS) resetClient(resetErr error) (client *http.Client, err err
 		}
 	}
 
-	p.logger.Debug("recreating the http client", slogutil.KeyError, resetErr)
-	p.client, err = p.createClient()
-
-	return p.client, err
+	return client, err
 }
 
 // getQUICConfig returns the QUIC config in a thread-safe manner.  Note, that
@@ -458,11 +497,14 @@ func (p *dnsOverHTTPS) resetQUICConfig() {
 
 // getClient gets or lazily initializes an HTTP client (and transport) that will
 // be used for this DoH resolver.
-func (p *dnsOverHTTPS) getClient() (c *http.Client, isCached bool, err error) {
+func (p *dnsOverHTTPS) getClient(work *httpWork) (c *http.Client, isCached bool, err error) {
 	startTime := time.Now()
 
 	p.clientMu.Lock()
 	defer p.clientMu.Unlock()
+	if p.closed {
+		return nil, false, net.ErrClosed
+	}
 
 	if p.client != nil {
 		return p.client, true, nil
@@ -476,7 +518,7 @@ func (p *dnsOverHTTPS) getClient() (c *http.Client, isCached bool, err error) {
 	}
 
 	p.logger.Debug("creating a new http client")
-	p.client, err = p.createClient()
+	p.client, err = p.createClient(work)
 
 	return p.client, false, err
 }
@@ -485,8 +527,8 @@ func (p *dnsOverHTTPS) getClient() (c *http.Client, isCached bool, err error) {
 // will depend on whether HTTP3 is allowed and provided by this upstream.  Note,
 // that we'll attempt to establish a QUIC connection when creating the client in
 // order to check whether HTTP3 is supported.
-func (p *dnsOverHTTPS) createClient() (*http.Client, error) {
-	transport, err := p.createTransport()
+func (p *dnsOverHTTPS) createClient(work *httpWork) (*http.Client, error) {
+	transport, err := p.createTransport(work)
 	if err != nil {
 		return nil, fmt.Errorf("initializing http transport: %w", err)
 	}
@@ -496,10 +538,9 @@ func (p *dnsOverHTTPS) createClient() (*http.Client, error) {
 		// A redirect is a non-200 DNS response, not permission to send the
 		// query to another endpoint. Apply this to every HTTP transport.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		// TODO(ameshkov):  p.timeout may appear zero that will disable the
-		// timeout for client, consider using the default.
-		Timeout: p.timeout,
-		Jar:     nil,
+		// The request context is the sole timeout owner, also carried through
+		// native transports that detach their dial context. Zero stays off.
+		Jar: nil,
 	}
 
 	p.client = client
@@ -513,7 +554,7 @@ func (p *dnsOverHTTPS) createClient() (*http.Client, error) {
 // that this function will first attempt to establish a QUIC connection (if
 // HTTP3 is enabled in the upstream options).  If this attempt is successful,
 // it returns an HTTP3 transport, otherwise it returns the H1/H2 transport.
-func (p *dnsOverHTTPS) createTransport() (t http.RoundTripper, err error) {
+func (p *dnsOverHTTPS) createTransport(work *httpWork) (t http.RoundTripper, err error) {
 	dialContext, err := p.getDialer()
 	if err != nil {
 		return nil, fmt.Errorf("bootstrapping %s: %w", p.addrRedacted, err)
@@ -523,7 +564,7 @@ func (p *dnsOverHTTPS) createTransport() (t http.RoundTripper, err error) {
 	// connection is established successfully, we'll be using HTTP3 for this
 	// upstream.
 	tlsConf := p.tlsConf.Clone()
-	transportH3, err := p.createTransportH3(tlsConf, dialContext)
+	transportH3, err := p.createTransportH3(tlsConf, dialContext, work)
 	if err == nil {
 		p.logger.Debug("using http/3 for this upstream, quic was faster")
 
@@ -555,6 +596,11 @@ func (p *dnsOverHTTPS) createTransport() (t http.RoundTripper, err error) {
 		DisableCompression: true,
 		DialContext:        dialContext,
 		DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			ctx, finish, dialErr := beginHTTPDial(ctx)
+			if dialErr != nil {
+				return nil, dialErr
+			}
+			defer finish()
 			conn, dialErr := tlsDial(ctx, dialContext, tlsConf.Clone())
 			if dialErr != nil {
 				return nil, dialErr
@@ -648,12 +694,13 @@ func (h *http3Transport) Close() (err error) {
 func (p *dnsOverHTTPS) createTransportH3(
 	tlsConfig *tls.Config,
 	dialContext bootstrap.DialHandler,
+	work *httpWork,
 ) (roundTripper http.RoundTripper, err error) {
 	if !p.supportsH3() {
 		return nil, errors.Error("HTTP3 support is not enabled")
 	}
 
-	addr, err := p.probeH3(tlsConfig, dialContext)
+	addr, err := p.probeH3(tlsConfig, dialContext, work)
 	if err != nil {
 		return nil, err
 	}
@@ -668,7 +715,34 @@ func (p *dnsOverHTTPS) createTransportH3(
 			tlsCfg *tls.Config,
 			cfg *quic.Config,
 		) (c *quic.Conn, err error) {
-			return dialQUIC(ctx, p.networkDialer, addr, tlsCfg, cfg)
+			ctx, finish, dialErr := beginHTTPDial(ctx)
+			if dialErr != nil {
+				return nil, dialErr
+			}
+			c, err = dialQUIC(ctx, p.networkDialer, addr, tlsCfg, cfg)
+			if err != nil {
+				finish()
+				return nil, err
+			}
+			// DialEarly must return promptly for 0-RTT, but that is not
+			// handshake completion. Transfer this same work reference to the
+			// physical connection's completion signals. Native dial ctx is
+			// canceled on return and cannot establish physical completion.
+			select {
+			case <-c.HandshakeComplete():
+				finish()
+			case <-c.Context().Done():
+				finish()
+			default:
+				go func(connection *quic.Conn) {
+					select {
+					case <-connection.HandshakeComplete():
+					case <-connection.Context().Done():
+					}
+					finish()
+				}(c)
+			}
+			return c, nil
 		},
 		DisableCompression: true,
 		TLSClientConfig:    tlsConfig,
@@ -684,6 +758,7 @@ func (p *dnsOverHTTPS) createTransportH3(
 func (p *dnsOverHTTPS) probeH3(
 	tlsConfig *tls.Config,
 	dialContext bootstrap.DialHandler,
+	work *httpWork,
 ) (addr string, err error) {
 	// We're using bootstrapped address instead of what's passed to the function
 	// it does not create an actual connection, but it helps us determine
@@ -726,8 +801,11 @@ func (p *dnsOverHTTPS) probeH3(
 	// Run probeQUIC and probeTLS in parallel and see which one is faster.
 	chQUIC := make(chan error, 1)
 	chTLS := make(chan error, 1)
-	go p.probeQUIC(addr, probeTLSCfg, chQUIC)
-	go p.probeTLS(dialContext, probeTLSCfg, chTLS)
+	// Exchange is still admitting work here. Register before either child
+	// starts; selecting the faster protocol is not physical completion.
+	work.work.Add(2)
+	go func(address string) { defer work.work.Done(); p.probeQUIC(address, probeTLSCfg, chQUIC) }(addr)
+	go func() { defer work.work.Done(); p.probeTLS(dialContext, probeTLSCfg, chTLS) }()
 
 	select {
 	case quicErr := <-chQUIC:
