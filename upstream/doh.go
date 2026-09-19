@@ -354,6 +354,14 @@ func (p *dnsOverHTTPS) exchangeHTTPSClient(
 	if len(body) == 0 || len(body) > dns.MaxMsgSize {
 		return nil, fmt.Errorf("invalid DNS response body length from %s", p.addrRedacted)
 	}
+	if httpResp.ContentLength >= 0 && int64(len(body)) != httpResp.ContentLength {
+		return nil, fmt.Errorf(
+			"DNS response body length from %s: got %d, declared %d",
+			p.addrRedacted,
+			len(body),
+			httpResp.ContentLength,
+		)
+	}
 	ticket := state.reserve(body, 0, false)
 	defer func() {
 		if err != nil {
