@@ -175,6 +175,18 @@ and [official dnsproxy DoH implementation](https://github.com/AdguardTeam/dnspro
 were checked before this change. Reuse of those transports is retained; the
 fork adds the missing invocation ownership rather than a second HTTP stack.
 
+After the complete bounded read, DoH checks a known `Content-Length` against
+the actual body length before reserving a receipt. The native HTTP/3 body at
+the pinned quic-go revision can return EOF with declared bytes still missing;
+a complete DNS message alone must not make that malformed HTTP response
+successful. This follows [RFC 9114 section 4.1.2](https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1.2).
+Unknown length remains valid, and the native transports keep compression
+disabled. Real HTTP/1.1, HTTP/2 and HTTP/3 fixtures cover declared and unknown
+lengths, the short declared body and unsolicited gzip rejection. A warm H3
+exchange proves the malformed response is not replayed and a subsequent valid
+query recovers through the existing failed-client retirement policy. No early
+delivery, transport parser or additional QUIC fork change is introduced.
+
 Receipt observation and expiry serialize on one short state lock. The clock is
 read there immediately after complete native read and before decoding. This is
 a software observation boundary, not a guarantee about physical packet arrival
