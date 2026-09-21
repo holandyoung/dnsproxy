@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/AdguardTeam/golibs/httphdr"
@@ -319,6 +320,12 @@ func (p *Proxy) respondHTTPS(d *DNSContext) (err error) {
 	}
 
 	w.Header().Set(httphdr.ContentType, "application/dns-message")
+	// Large H1 bodies already leave the native buffer during Write. Declare the
+	// exact encoded size so their completion does not wait for middleware and
+	// a final chunk. H2/H3 keep native framing and require end-of-stream.
+	if d.HTTPRequest.ProtoMajor == 1 {
+		w.Header().Set(httphdr.ContentLength, strconv.Itoa(len(bytes)))
+	}
 	_, err = w.Write(bytes)
 
 	return err

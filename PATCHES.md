@@ -187,6 +187,30 @@ exchange proves the malformed response is not replayed and a subsequent valid
 query recovers through the existing failed-client retirement policy. No early
 delivery, transport parser or additional QUIC fork change is introduced.
 
+The native DoH server declares the actual encoded response length for HTTP/1.x.
+For large bodies already emitted by the native Write, this removes the final
+chunk's dependency on post-write middleware. Small buffered responses still
+follow native buffering; HTTP/2 and HTTP/3 retain native framing and stream-end
+completion. No explicit Flush, new writer interface, asynchronous borrowed
+message or client-side early delivery is added. The sole existing Pack result
+owns the length; compressed-message size is never inferred from a logical graph.
+CoreDNS's [encoded-length header](https://github.com/coredns/coredns/blob/5cb7cdc914bd1bab403235f005adce27df40c52c/core/dnsserver/server_https.go)
+and Go's native response framing were inspected before implementation.
+TestHTTPSCompleteBodyBeforePostWriteObservation uses an actual TLS/H1 server,
+a blocked post-write middleware and a complete native body reader; the original
+chunked response fails its completion assertion after full body verification.
+TestHTTPSContentLengthUsesEncodedBody preserves exact native bytes for small,
+large, compressed and refused answers across H1/H2/H3, including native absent
+length on large H2/H3 bodies. These are correctness boundaries, not a claim
+that all query work is asynchronous or that arbitrary clients observe no delay.
+
+The required full check exposed an older TestServeCached assumption that a real
+UDP cache exchange cannot cross a Unix-second boundary. The test now bounds the
+remaining TTL using observed insertion and read intervals, then compares the
+complete encoded messages with that independently checked TTL. It neither
+changes cache behavior nor ignores TTL differences. Low and high TTL mutations
+fail their respective bound; removing only that bound makes each control pass.
+
 Receipt observation and expiry serialize on one short state lock. The clock is
 read there immediately after complete native read and before decoding. This is
 a software observation boundary, not a guarantee about physical packet arrival
