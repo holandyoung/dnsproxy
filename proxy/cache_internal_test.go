@@ -73,7 +73,9 @@ func TestServeCached(t *testing.T) {
 	}).SetReply(request)
 	reply.SetEdns0(defaultUDPBufSize, false)
 
+	insertBefore := time.Now().Unix()
 	dnsProxy.cache.set(request, reply, upstreamWithAddr, testLogger)
+	insertAfter := time.Now().Unix()
 
 	// Create a DNS-over-UDP client connection.
 	addr := dnsProxy.Addr(ProtoUDP)
@@ -82,10 +84,26 @@ func TestServeCached(t *testing.T) {
 		Timeout: testTimeout,
 	}
 
+	readBefore := time.Now().Unix()
 	r, _, err := client.Exchange(request, addr.String())
+	readAfter := time.Now().Unix()
 	require.NoErrorf(t, err, "error in the first request: %s", err)
 
-	requireEqualMsgs(t, r, reply)
+	// Native cache expiration and remaining TTL use Unix seconds. A real UDP
+	// exchange can cross a second boundary even when it completes promptly.
+	// Bound the actual TTL from both observed clock intervals before comparing
+	// every other field; never ignore TTL or add an arbitrary tolerance.
+	require.Len(t, r.Answer, 1)
+	ttl := int64(r.Answer[0].Header().Ttl)
+	require.GreaterOrEqual(t, ttl, 3600+insertBefore-readAfter, "cached TTL below observed time bound")
+	require.LessOrEqual(t, ttl, 3600+insertAfter-readBefore, "cached TTL above observed time bound")
+	want := reply.Copy()
+	want.Answer[0].Header().Ttl = uint32(ttl)
+	wantWire, err := want.Pack()
+	require.NoError(t, err)
+	gotWire, err := r.Pack()
+	require.NoError(t, err)
+	require.Equal(t, wantWire, gotWire)
 }
 
 func TestCache_expired(t *testing.T) {
